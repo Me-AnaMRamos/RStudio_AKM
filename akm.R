@@ -8,6 +8,9 @@
 #   3. Main block         - Loads data, runs pipeline for each outcome, saves results
 # ==============================================================================
 
+
+# Required packages: haven, dplyr, igraph, lfe
+# Install if needed: install.packages(c("haven", "dplyr", "igraph", "lfe"))
 library(haven)   # read/write Stata .dta files
 library(dplyr)   # data manipulation (filter, select, join, etc.)
 library(igraph)  # build mobility graph and find connected components
@@ -79,6 +82,11 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
         if (is.character(controls) && controls %in% c("week", "month", "bimonth")) {
                 
                 if (controls == "week") {
+                        # Debug: check time variable
+                        print(time_var)
+                        print(class(df[[time_var]]))
+                        str(df[[time_var]])
+                        
                         df[["time_control"]] <- format(df[[time_var]], "%Y-%U")  # year-week
                 } else if (controls == "month") {
                         df[["time_control"]] <- format(df[[time_var]], "%Y-%m")  # year-month
@@ -256,7 +264,7 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
 # Results are saved to Outputs/ relative to script_dir.
 
 script_dir <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) getwd())
-data_path  <- file.path(script_dir, "Data", "Analysis_data", "data.dta")
+data_path  <- file.path(script_dir, "Data", "Analysis_data", "processed", "data_processed.dta")
 output_dir <- file.path(script_dir, "Outputs")
 
 dir.create(output_dir, showWarnings = FALSE)  # create Outputs/ if it doesn't exist yet
@@ -264,13 +272,18 @@ dir.create(output_dir, showWarnings = FALSE)  # create Outputs/ if it doesn't ex
 df <- read_dta(data_path)
 message("Loaded data: ", nrow(df), " rows, ", ncol(df), " columns.")
 
+df <- df %>%
+        mutate(
+                date = as.Date(day, origin = "1960-01-01")
+        )
+
 # --- Settings ----------------------------------------------------------------
 # i = worker identifier column, j = plant identifier column.
 # Change these two lines if running AKM on different columns.
 
-i <- "employee_id"   # worker ID column
+i <- "id_employee"   # worker ID column
 j <- "plant"         # plant ID column
-t <- "day"           # time variable column
+t <- "date"           # time variable column
 
 # Controls: NULL for none, or "week" / "month" / "bimonth" for automatic time
 # dummies, or a character vector of existing column names (e.g. c("age", "tenure")).
@@ -289,7 +302,6 @@ outcomes <- c("log_rev_per_hour", "log_rev", "log_quant",
 # --- Run first outcome and cache the connected components -------------------
 # Computing the mobility graph is the slow step. We do it once and reuse
 # the component assignments for all subsequent outcomes.
-
 message("\n--- Outcome: ", outcomes[1], " ---")
 first_result <- run_akm_pipeline(df, outcomes[1], i, j, t, CONTROLS)
 

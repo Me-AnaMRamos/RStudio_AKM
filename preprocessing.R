@@ -8,6 +8,11 @@
 # Output: Data/Analysis_data/processed/data_processed.dta
 # ==============================================================================
 
+
+# Required packages: haven, dplyr
+# Install if needed: install.packages(c("haven", "dplyr"))
+library(haven)
+library(dplyr)
 library(haven)   # read/write Stata .dta files
 library(dplyr)   # data manipulation
 
@@ -69,8 +74,8 @@ for (col in required_cols) {
 # Check that the three ID columns contain only integer values.
 # Stata numeric IDs sometimes come in as doubles (e.g. 1.0, 2.0); we check
 # whether all non-missing values are whole numbers, not just that the type is integer.
-message("\n--- Identifier type checks ---")
-for (col in c(COL_WORKER, COL_PLANT, COL_MANAGER)) {
+message("\n--- Identifier type checks ---") 
+for (col in c(COL_WORKER, COL_PLANT)) {     # Add , COL_MANAGER if it will be used later  
         vals        <- df[[col]][!is.na(df[[col]])]
         is_int_vals <- all(vals == floor(vals))
         message(sprintf("  %-20s integer-valued: %s", col, is_int_vals))
@@ -85,11 +90,19 @@ for (col in c(COL_WORKER, COL_PLANT, COL_MANAGER)) {
 # "day" counts days since the earliest date in the data, so the first date = 0.
 # This integer is what AKM estimation uses as the time variable.
 
+summary(df[[COL_DATE]])
+head(df[[COL_DATE]])
+
 df <- df %>%
         mutate(
-                date = as.Date(as.numeric(.data[[COL_DATE]]), origin = "1960-01-01"),  # Stata epoch
-                day  = as.integer(date - min(date, na.rm = TRUE))
+                date = as.Date(.data[[COL_DATE]]),  # correct conversion
+                # date = as.Date(as.numeric(.data[[COL_DATE]]), origin = "1960-01-01"),  # Stata epoch
+                day  = as.integer(date - as.Date("1960-01-01"))  # Stata-compatible days
         )
+summary(df[["date"]])
+head(df[["date"]])
+summary(df[["day"]])
+head(df[["day"]])
 
 message("\nDate range: ", min(df$date, na.rm = TRUE), " to ", max(df$date, na.rm = TRUE))
 message("Day range:  ", min(df$day,  na.rm = TRUE), " to ", max(df$day,  na.rm = TRUE))
@@ -220,3 +233,4 @@ if (n_dupes > 0) {
 write_dta(df, output_path)
 message("\nProcessed dataset saved to: ", output_path)
 message("Final dataset: ", nrow(df), " rows, ", ncol(df), " columns.")
+
