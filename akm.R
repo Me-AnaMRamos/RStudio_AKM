@@ -79,32 +79,32 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
         # from the actual calendar date in time_var.
         # Otherwise, controls should be a character vector of column names (or NULL).
         
-        if (is.character(controls) && controls %in% c("week", "month", "bimonth")) {
-                
-                if (controls == "week") {
-                        # Debug: check time variable
-                        print(time_var)
-                        print(class(df[[time_var]]))
-                        str(df[[time_var]])
-                        
-                        df[["time_control"]] <- format(df[[time_var]], "%Y-%U")  # year-week
-                } else if (controls == "month") {
-                        df[["time_control"]] <- format(df[[time_var]], "%Y-%m")  # year-month
-                } else if (controls == "bimonth") {
-                        m <- as.integer(format(df[[time_var]], "%m"))
-                        y <- format(df[[time_var]], "%Y")
-                        bimonth <- (m - 1) %/% 2 + 1
-                        df[["time_control"]] <- paste0(y, "-", bimonth)         # year-bimonth
-                }
-                
-                df[["time_control"]] <- as.factor(df[["time_control"]])
-                controls <- "time_control"
-                
-                message("Created time dummies (", controls, ") from '", time_var, "'.")
-                
-        } else if (is.null(controls)) {
-                controls <- character(0)
-        }
+        # if (is.character(controls) && controls %in% c("week", "month", "bimonth")) {
+        #         
+        #         if (controls == "week") {
+        #                 # Debug: check time variable
+        #                 print(time_var)
+        #                 print(class(df[[time_var]]))
+        #                 str(df[[time_var]])
+        #                 
+        #                 df[["time_control"]] <- format(df[[time_var]], "%Y-%U")  # year-week
+        #         } else if (controls == "month") {
+        #                 df[["time_control"]] <- format(df[[time_var]], "%Y-%m")  # year-month
+        #         } else if (controls == "bimonth") {
+        #                 m <- as.integer(format(df[[time_var]], "%m"))
+        #                 y <- format(df[[time_var]], "%Y")
+        #                 bimonth <- (m - 1) %/% 2 + 1
+        #                 df[["time_control"]] <- paste0(y, "-", bimonth)         # year-bimonth
+        #         }
+        #         
+        #         df[["time_control"]] <- as.factor(df[["time_control"]])
+        #         controls <- "time_control"
+        #         
+        #         message("Created time dummies (", controls, ") from '", time_var, "'.")
+        #         
+        # } else if (is.null(controls)) {
+        #         controls <- character(0)
+        # }
         
         # --- Input checks ----------------------------------------------------------
         # Stop early with a clear message if something is wrong with the data.
@@ -265,7 +265,7 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
 
 script_dir <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) getwd())
 data_path  <- file.path(script_dir, "Data", "Analysis_data", "processed", "data_processed.dta")
-output_dir <- file.path(script_dir, "Outputs")
+output_dir <- file.path(script_dir, "Outputs", "AKM")
 
 dir.create(output_dir, showWarnings = FALSE)  # create Outputs/ if it doesn't exist yet
 
@@ -295,6 +295,39 @@ CONTROLS_LABEL <- "week"   # used in output filenames -- change to match CONTROL
 # Examples:
 #   CONTROLS <- NULL  ;  CONTROLS_LABEL <- "no_controls"
 #   CONTROLS <- c("age", "tenure")  ;  CONTROLS_LABEL <- "age_tenure"
+
+# --- Optional: auto-generate time dummies from a date variable ------------------
+# detect whether CONTROLS contains a period keyword
+period_keywords <- c("week", "month", "bimonth")
+period_match    <- intersect(CONTROLS, period_keywords)
+
+if (length(period_match) > 0) {
+        
+        # use the first matched keyword if somehow more than one is passed
+        freq <- period_match[1]
+        
+        if (freq == "week") {
+                df[["time_control"]] <- format(df[[t]], "%Y-%U")  # year-week
+        } else if (freq == "month") {
+                df[["time_control"]] <- format(df[[t]], "%Y-%m")  # year-month
+        } else if (freq == "bimonth") {
+                m <- as.integer(format(df[[t]], "%m"))
+                y <- format(df[[t]], "%Y")
+                bimonth <- (m - 1) %/% 2 + 1
+                df[["time_control"]] <- paste0(y, "-", bimonth)         # year-bimonth
+        }
+        
+        df[["time_control"]] <- as.factor(df[["time_control"]])
+
+        # replace the keyword in CONTROLS with the new column name,
+        # keeping any other column names that were passed alongside it
+        CONTROLS <- c(setdiff(CONTROLS, period_keywords), "time_control")
+        
+        message("Created time dummies (", freq, ") from '", t, "'.")
+        
+} else if (is.null(CONTROLS)) {
+        CONTROLS <- character(0)
+}
 
 outcomes <- c("log_rev_per_hour", "log_rev", "log_quant",
               "log_tottime", "log_avgtime", "log_value")

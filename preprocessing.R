@@ -13,8 +13,6 @@
 # Install if needed: install.packages(c("haven", "dplyr"))
 library(haven)
 library(dplyr)
-library(haven)   # read/write Stata .dta files
-library(dplyr)   # data manipulation
 
 
 # ==============================================================================
@@ -75,7 +73,7 @@ for (col in required_cols) {
 # Stata numeric IDs sometimes come in as doubles (e.g. 1.0, 2.0); we check
 # whether all non-missing values are whole numbers, not just that the type is integer.
 message("\n--- Identifier type checks ---") 
-for (col in c(COL_WORKER, COL_PLANT)) {     # Add , COL_MANAGER if it will be used later  
+for (col in c(COL_WORKER, COL_PLANT)) {     # Add COL_MANAGER if it will be used later  
         vals        <- df[[col]][!is.na(df[[col]])]
         is_int_vals <- all(vals == floor(vals))
         message(sprintf("  %-20s integer-valued: %s", col, is_int_vals))
@@ -90,8 +88,6 @@ for (col in c(COL_WORKER, COL_PLANT)) {     # Add , COL_MANAGER if it will be us
 # "day" counts days since the earliest date in the data, so the first date = 0.
 # This integer is what AKM estimation uses as the time variable.
 
-summary(df[[COL_DATE]])
-head(df[[COL_DATE]])
 
 df <- df %>%
         mutate(
@@ -99,10 +95,9 @@ df <- df %>%
                 # date = as.Date(as.numeric(.data[[COL_DATE]]), origin = "1960-01-01"),  # Stata epoch
                 day  = as.integer(date - as.Date("1960-01-01"))  # Stata-compatible days
         )
+
 summary(df[["date"]])
-head(df[["date"]])
 summary(df[["day"]])
-head(df[["day"]])
 
 message("\nDate range: ", min(df$date, na.rm = TRUE), " to ", max(df$date, na.rm = TRUE))
 message("Day range:  ", min(df$day,  na.rm = TRUE), " to ", max(df$day,  na.rm = TRUE))
@@ -172,6 +167,7 @@ df <- df %>%
 # tenure: days since the worker was hired, then shifted so each worker's
 # minimum observed tenure is 0. This normalizes across workers who may have
 # been hired before the data window begins.
+
 df <- df %>%
         mutate(
                 hiring_date = as.Date(as.numeric(.data[[COL_HIRING]]), origin = "1960-01-01"),
