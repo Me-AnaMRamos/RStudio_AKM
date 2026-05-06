@@ -74,38 +74,6 @@ run_akm <- function(df, outcome, worker_id, plant_id, time_var, controls = NULL)
 run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
                              controls = NULL, cached_comps = NULL) {
         
-        # --- Optional: auto-generate time dummies from a date variable ------------------
-        # If controls is "week", "month", or "bimonth", create a categorical time variable
-        # from the actual calendar date in time_var.
-        # Otherwise, controls should be a character vector of column names (or NULL).
-        
-        # if (is.character(controls) && controls %in% c("week", "month", "bimonth")) {
-        #         
-        #         if (controls == "week") {
-        #                 # Debug: check time variable
-        #                 print(time_var)
-        #                 print(class(df[[time_var]]))
-        #                 str(df[[time_var]])
-        #                 
-        #                 df[["time_control"]] <- format(df[[time_var]], "%Y-%U")  # year-week
-        #         } else if (controls == "month") {
-        #                 df[["time_control"]] <- format(df[[time_var]], "%Y-%m")  # year-month
-        #         } else if (controls == "bimonth") {
-        #                 m <- as.integer(format(df[[time_var]], "%m"))
-        #                 y <- format(df[[time_var]], "%Y")
-        #                 bimonth <- (m - 1) %/% 2 + 1
-        #                 df[["time_control"]] <- paste0(y, "-", bimonth)         # year-bimonth
-        #         }
-        #         
-        #         df[["time_control"]] <- as.factor(df[["time_control"]])
-        #         controls <- "time_control"
-        #         
-        #         message("Created time dummies (", controls, ") from '", time_var, "'.")
-        #         
-        # } else if (is.null(controls)) {
-        #         controls <- character(0)
-        # }
-        
         # --- Input checks ----------------------------------------------------------
         # Stop early with a clear message if something is wrong with the data.
         
@@ -231,14 +199,10 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
         plant_fe_all  <- bind_rows(all_plant_fe)
         
         # --- Standardize plant FEs across all components --------------------------
-        # Raw plant FEs from different components are on incompatible scales because
-        # felm can only pin the level within each component (the FEs are identified
-        # up to an additive constant per component). Standardizing (z-scoring) the
-        # plant FEs after pooling all components puts them on a common scale --
-        # mean zero, standard deviation one -- so they can be compared across plants
+        #  Standardizing (z-scoring) the
+        # plant FEs after pooling all components puts them on a common scale so they can be compared across plants
         # regardless of which component they came from.
-        # Worker FEs are left on their raw scale since cross-component comparisons
-        # are not the goal here.
+        # Worker FEs are left on their raw scale
         
         plant_fe_all$fe_plant_std <- scale(plant_fe_all$fe_plant)[, 1]
         
@@ -294,9 +258,9 @@ CONTROLS_LABEL <- "week"   # used in output filenames -- change to match CONTROL
 
 # Examples:
 #   CONTROLS <- NULL  ;  CONTROLS_LABEL <- "no_controls"
-#   CONTROLS <- c("age", "tenure")  ;  CONTROLS_LABEL <- "age_tenure"
+#   CONTROLS <- c("age", "tenure", "week")  ;  CONTROLS_LABEL <- "age_tenure_week"
 
-# --- Optional: auto-generate time dummies from a date variable ------------------
+# --- Optional: Auto-generate time dummies from a date variable ------------------
 # detect whether CONTROLS contains a period keyword
 period_keywords <- c("week", "month", "bimonth")
 period_match    <- intersect(CONTROLS, period_keywords)

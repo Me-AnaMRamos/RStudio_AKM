@@ -3,7 +3,7 @@
 #
 # Takes the processed worker-day panel, filters to valid workers, defines
 # worker mobility (spells, movedate, post), aggregates to worker-plant-period,
-# and computes dist. No regression, no plant FE merging -- that is Script 1b.
+# and computes dist. (No regression and no plant FE merging)
 #
 # Input:  Data/Analysis_data/processed/data_processed.dta
 #         Data/Analysis_data/valid_workers.dta  (from AKM worker FE output)
@@ -13,6 +13,7 @@
 library(haven)    # read/write .dta files
 library(dplyr)    # data manipulation
 library(lubridate) # floor_date() for period binning
+library(data.table)
 
 
 # ==============================================================================
@@ -35,9 +36,7 @@ COL_DAY     <- "day"
 
 # Absence columns: adjust names if your data uses different ones.
 # COL_ABSENT_IND: binary indicator for whether the worker was absent that day.
-# COL_ABSENT_MIN: continuous measure of minutes/hours absent (if available).
 COL_ABSENT_IND  <- "absent"          # binary: 1 if absent that day
-COL_ABSENT_MIN  <- "absent_minutes"  # continuous absence measure
 
 # Shift timing columns
 COL_START_HOUR       <- "start_hour"        # actual start hour (categorical/numeric)
@@ -173,19 +172,18 @@ get_mode <- function(x) {
         tbl <- sort(table(x), decreasing = TRUE)
         names(tbl)[1]
 }
-message("\nFunction created: ", nrow(df), " rows.")
-
 
 # --- Shift start time to decimal hours ---------------------------------------
 # shift_start_time may be stored as "HH:MM" strings or a numeric.
 # We convert to decimal hours (e.g. "08:30" -> 8.5) before taking the mode.
 to_decimal_hours <- function(x) {
-        # If already numeric, return as-is
         if (is.numeric(x)) return(x)
-        # Parse "HH:MM" format
-        parts <- strsplit(as.character(x), ":")
+        
+        x <- gsub("[^0-9:]", "", as.character(x))
+        parts <- strsplit(x, ":", fixed = TRUE)
+        
         sapply(parts, function(p) {
-                if (length(p) < 2 || any(is.na(p))) return(NA_real_)
+                if (length(p) < 2) return(NA_real_)
                 as.numeric(p[1]) + as.numeric(p[2]) / 60
         })
 }
@@ -193,12 +191,10 @@ to_decimal_hours <- function(x) {
 df <- df %>%
         mutate(shift_start_decimal = to_decimal_hours(.data[[COL_SHIFT_START_TIME]]))
 
-message("\nShift start time: ", nrow(df), " rows.")
-
-
 # --- Aggregate ---------------------------------------------------------------
 # One row per (worker, plant, period).
 # Each variable type has its own aggregation rule as described in the design.
+
 
 collapsed <- df %>%
         group_by(.data[[COL_WORKER]], .data[[COL_PLANT]], period) %>%
@@ -221,8 +217,7 @@ collapsed <- df %>%
                 # Absence: indicator (any absence in period) and total days absent
                 absent_any       = max(.data[[COL_ABSENT_IND]],  na.rm = TRUE),
                 absent_days      = sum(.data[[COL_ABSENT_IND]],  na.rm = TRUE),
-                absent_min_total = sum(.data[[COL_ABSENT_MIN]],  na.rm = TRUE),
-                
+
                 # Shift timing: mode of actual start hour; mode of scheduled start (decimal)
                 start_hour_mode        = as.numeric(get_mode(.data[[COL_START_HOUR]])),
                 shift_start_mode       = get_mode(shift_start_decimal),

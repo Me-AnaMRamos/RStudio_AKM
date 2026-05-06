@@ -1,6 +1,7 @@
-.Rproj.user
-.Rhistory
-.RData
+*.Rproj.user
+*.Rhistory
+*.RData
 .Ruserdata
 .positai
-.dta
+*.dta
+*.csv
