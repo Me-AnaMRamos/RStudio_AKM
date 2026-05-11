@@ -7,13 +7,16 @@
 
 library(haven)
 library(dplyr)
+library(stringr)
+library(readr)
 
 # ---- path -------------------------------------------------------------------
-# Adjust if the file lives elsewhere.
-script_dir <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) getwd())
-path <- file.path(script_dir, "DiD_tables.dta")
 
-df <- read_dta(path)
+# ==============================
+# 1. LOAD RESULTS TABLE
+# ==============================
+
+df <- read_dta("DiD_tables.dta")
 
 # ==============================================================================
 # 1. Structure
@@ -34,6 +37,11 @@ cat("\n==============================\n")
 cat("FIRST 20 ROWS\n")
 cat("==============================\n")
 print(as.data.frame(head(df, 20)), digits = 4)
+
+
+
+# =======================================================================================================
+
 
 # ==============================================================================
 # 3. Unique values of categorical / identifier columns
@@ -68,63 +76,7 @@ cat("==============================\n")
 miss <- sapply(df, function(x) sum(is.na(x)))
 print(miss[miss > 0])
 
-# ==============================================================================
-# 6. If there are estimate / std_error / p_value columns, show results by spec
-# ==============================================================================
-has_est <- all(c("estimate", "std_error") %in% colnames(df))
 
-if (has_est) {
-        cat("\n==============================\n")
-        cat("RESULTS TABLE (estimate / se / p)\n")
-        cat("==============================\n")
-        
-        # Detect grouping columns (anything that is not a numeric result column)
-        result_cols <- intersect(colnames(df),
-                                 c("estimate", "std_error", "t_stat", "p_value",
-                                   "n_obs", "conf_low", "conf_high"))
-        group_cols  <- setdiff(colnames(df), result_cols)
-        
-        # Print grouped
-        for (gc in group_cols) {
-                if (n_distinct(df[[gc]], na.rm = TRUE) <= 50) {
-                        cat("\n--- by", gc, "---\n")
-                        tbl <- df %>%
-                                group_by(.data[[gc]]) %>%
-                                summarise(
-                                        n          = n(),
-                                        mean_est   = mean(estimate,  na.rm = TRUE),
-                                        sd_est     = sd(estimate,    na.rm = TRUE),
-                                        mean_se    = mean(std_error, na.rm = TRUE),
-                                        pct_sig05  = mean(p_value < 0.05, na.rm = TRUE),
-                                        .groups = "drop"
-                                )
-                        print(as.data.frame(tbl), digits = 4)
-                }
-        }
-        
-        # Full table sorted by outcome then term
-        sort_cols <- intersect(c("outcome", "term", "akm_outcome", "spec"), colnames(df))
-        cat("\n--- Full results table ---\n")
-        print(as.data.frame(df %>% arrange(across(all_of(sort_cols)))), digits = 4)
-}
-
-cat("\n[inspection complete]\n")
-
-
-
-# صاف / clean environment
-rm(list = ls())
-
-library(haven)
-library(dplyr)
-library(stringr)
-library(readr)
-
-# ==============================
-# 1. LOAD RESULTS TABLE
-# ==============================
-
-df <- read_dta("DiD_tables.dta")
 
 # ==============================
 # 2. KEEP ONLY TREATMENT EFFECTS
@@ -136,11 +88,123 @@ treat <- df %>%
                 str_detect(term, "^postXhigh")
         )
 
-# Extract FE definition cleanly
-treat <- treat %>%
-        mutate(
-                fe_type = str_remove(term, "postXhigh_")
-        )
+print(treat)
+
+# ==============================
+# NEW productivity measuresssssssssssssssssssssssssssssssssss
+# ==============================
+
+#log_quant_feff
+
+new_b2_coeffs <- df %>%
+        filter(
+                feff_col == "log_quant_feff",
+                spec == "post_x_highmfe",
+                str_detect(term, "^postXhigh")
+        ) %>%
+        select(outcome, beta2 = coef, se2 = se, p2 = p)
+
+
+# β1 (post effect, SAME SPEC)
+new_b1_coeffs <- df %>%
+        filter(
+                feff_col == "log_quant_feff",
+                spec == "post_x_highmfe",
+                term == "post"
+        ) %>%
+        select(outcome, beta1 = coef, se1 = se, p1 = p)
+# Means
+
+means <- df %>%
+        select(outcome, y_mean, nobs) %>%
+        distinct()
+
+
+# Merge everything
+table_final <- new_b1_coeffs %>%
+        inner_join(new_b2_coeffs, by = "outcome") %>%
+        left_join(means, by = "outcome")
+
+#log_quant_feff
+print(table_final)
+
+#log_avgtime_feff
+
+new_b2_coeffs <- df %>%
+        filter(
+                feff_col =="log_avgtime_feff",
+                spec == "post_x_highmfe",
+                str_detect(term, "^postXhigh")
+        ) %>%
+        select(outcome, beta2 = coef, se2 = se, p2 = p)
+
+# β1 (post effect, SAME SPEC)
+new_b1_coeffs <- df %>%
+        filter(
+                feff_col ==  "log_avgtime_feff",
+                spec == "post_x_highmfe",
+                term == "post"
+        ) %>%
+        select(outcome, beta1 = coef, se1 = se, p1 = p)
+
+# Means
+
+means <- df %>%
+        select(outcome, y_mean, nobs) %>%
+        distinct()
+
+# Merge everything
+table_final <- new_b1_coeffs %>%
+        inner_join(new_b2_coeffs, by = "outcome") %>%
+        left_join(means, by = "outcome")
+print(table_final)
+
+# =======================================================
+
+
+# β2 (treatment)
+beta2 <- df %>%
+        filter(
+                feff_col == "log_value_feff",
+                spec == "post_x_highmfe"
+        ) %>%
+        select(outcome, beta2 = coef, se2 = se, p2 = p)
+print(beta2)
+
+# β1 (post effect, SAME SPEC)
+beta1 <- df %>%
+        filter(
+                feff_col == "log_value_feff",
+                spec == "post_x_highmfe",
+                term == "post"
+        ) %>%
+        select(outcome, beta1 = coef, se1 = se, p1 = p)
+
+print(beta1)
+# Means
+
+means <- df %>%
+        select(outcome, y_mean, nobs) %>%
+        distinct()
+print(means)
+
+
+# Merge everything
+table_final <- beta1 %>%
+        inner_join(beta2, by = "outcome") %>%
+        left_join(means, by = "outcome")
+print(table_final)
+
+treat %>%
+        filter(feff_col == "log_value_feff") %>%
+        head(20) %>%
+        print(digits = 4)
+
+
+treat %>%
+        filter(feff_col == "log_rev_per_hour_feff") %>%
+        head(20) %>%
+        print(digits = 4)
 # ==============================
 # 2b. KEEP BASELINE POST EFFECT (β1)
 # ==============================
@@ -156,6 +220,15 @@ post_eff <- post_eff %>%
                 fe_type = feff_col
         )
 
+post_eff %>%
+        filter(feff_col == "log_value_feff") %>%
+        head(20) %>%
+        print(digits = 4)
+
+post_eff %>%
+        filter(feff_col == "log_rev_per_hour_feff") %>%
+        head(20) %>%
+        print(digits = 4)
 # ==============================
 # 3. ADD SIGNIFICANCE + FORMAT
 # ==============================
@@ -319,3 +392,6 @@ b1 <- df |>
 
 combined <- left_join(b1, b2, by = c("outcome","feff_col"))
 print(combined, n=Inf)
+
+
+
