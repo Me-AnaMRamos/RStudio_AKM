@@ -318,5 +318,6 @@ df <- df %>% select(-movedate_period)
 
 write_dta(df, output_path)
 
+print(df)
 message("\nFinal dataset: ", nrow(df), " rows, ", ncol(df), " columns.")
 message("Saved to: ", output_path)

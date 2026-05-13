@@ -51,6 +51,7 @@ required_cols <- c(COL_WORKER, COL_PLANT, COL_MANAGER, COL_DATE,
 df <- read_dta(input_path)
 message("Loaded data: ", nrow(df), " rows, ", ncol(df), " columns.")
 
+
 # Check that all expected columns are present before doing anything else
 missing_cols <- setdiff(required_cols, colnames(df))
 if (length(missing_cols) > 0)
@@ -88,7 +89,6 @@ for (col in c(COL_WORKER, COL_PLANT)) {     # Add COL_MANAGER if it will be used
 # "day" counts days since the earliest date in the data, so the first date = 0.
 # This integer is what AKM estimation uses as the time variable.
 
-
 df <- df %>%
         mutate(
                 date = as.Date(.data[[COL_DATE]]),  # correct conversion
@@ -97,7 +97,6 @@ df <- df %>%
         )
 
 summary(df[["date"]])
-summary(df[["day"]])
 
 message("\nDate range: ", min(df$date, na.rm = TRUE), " to ", max(df$date, na.rm = TRUE))
 message("Day range:  ", min(df$day,  na.rm = TRUE), " to ", max(df$day,  na.rm = TRUE))

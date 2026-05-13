@@ -81,6 +81,7 @@ message("After filtering to valid workers: ", nrow(df), " rows, ",
 # Each new plant = new spell. We then find the longest spell per worker
 # and define movedate as its start date.
 
+df[[COL_DATE]] <- as.Date(df$day, origin = "1960-01-01")
 df <- df %>%
         arrange(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
         group_by(.data[[COL_WORKER]]) %>%
@@ -94,6 +95,7 @@ df <- df %>%
         ) %>%
         ungroup()
 
+summary(df[[COL_DATE]])
 # Compute duration (in days) of each spell
 spell_summary <- df %>%
         group_by(.data[[COL_WORKER]], spell_id) %>%
@@ -295,7 +297,7 @@ message("dist range (movers only): ",
 # ==============================================================================
 # 7. SAVE
 # ==============================================================================
-
+head(collapsed)
 write_dta(collapsed, output_path)
 message("\nCollapsed dataset saved to: ", output_path)
 message("Final dataset: ", nrow(collapsed), " rows, ", ncol(collapsed), " columns.")
