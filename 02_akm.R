@@ -365,8 +365,8 @@ plant_fe_all <- Reduce(
         all_plant_fe
 )
 
-plant_fe_all$plant <- as.numeric(as.character(plant_fe_all$plant))
-worker_fe_all$id_employee <- as.numeric(as.character(worker_fe_all$id_employee))
+worker_fe_all[[i]] <- as.numeric(as.character(worker_fe_all[[i]]))
+plant_fe_all[[j]] <- as.numeric(as.character(plant_fe_all[[j]]))
 
 # Save combined files
 write_dta(worker_fe_all,

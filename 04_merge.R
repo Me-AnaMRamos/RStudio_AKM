@@ -131,12 +131,16 @@ if (!file.exists(fe_path)) {
         stop("Combined plant FE file not found:\n", fe_path)
 }
 
-col_moveto <- paste0("move_to_plant")
-col_movefrom <- paste0("move_from_plant")
+col_moveto <- paste0("moved_to")
+col_movefrom <- paste0("moved_from")
 
-if(MOVE_DEF == 1){
+if (MOVE_DEF == 1){
                 df[[col_moveto]]   <- df[["d1_moved_to"]]
                 df[[col_movefrom]] <- df[["d1_moved_from"]]
+                
+                df <- df %>%
+                        select(-d1_moved_to, -d1_moved_from)
+                
 } else if (MOVE_DEF == 2) {                 # Definition 1 already computed in collapsed data
                 
                 # Definition 2: highest-FE plant within WINDOW_PERIODS of movedate,
@@ -253,8 +257,8 @@ for (outcome in OUTCOMES) {
         # Rename the plant ID in the FE file to col_moveto so the join matches on
         # the destination plant column.
         
-        col_fe_dest_std <- paste0("FEplant_des_", outcome)
-        col_fe_dep_std  <- paste0("FEplant_dep_", outcome)
+        col_fe_dest_std <- paste0("FE_dest_", outcome)
+        col_fe_dep_std  <- paste0("FE_dep_", outcome)
         
         # Destination plant FE
         plant_fe_renamed <- plant_fe %>%
