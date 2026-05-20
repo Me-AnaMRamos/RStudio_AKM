@@ -1,7 +1,7 @@
 # ==============================================================================
-# Script 2: run_regressions.R
+# Script: 05_run_regressions.R
 #
-# Reads the event study dataset from Script 1b and runs two regression
+# Reads the event study dataset from Script 04_define_moves.R and runs two regression
 # specifications for every (outcome variable) x (AKM FE classifier) combination:
 #
 #   Spec 1 — outcome ~ post + high + post*high | worker + period FEs | cluster
@@ -9,8 +9,8 @@
 #
 # Results from all runs are collected into a single tidy table and saved.
 #
-# Input:  Data/Analysis_data/processed/event_study_[PERIOD_COLLAPSED]_def[MOVE_DEF].dta
-# Output: Outputs/Regressions/results_[PERIOD]_def[MOVE_DEF]_fe[FE_LABEL]_cl[CL_LABEL].csv
+# Input:  Outputs/Merged/panel_data_level-[PERIOD]_akm-[CONTROLS_AKM]_def-[MOVE_DEF].dta
+# Output: Outputs/Regressions/results_level-[PERIOD]_akm-[CONTROLS_AKM]_def-[MOVE_DEF]_fe-[FE_LABEL]_cl-[CL_LABEL].csv
 # ==============================================================================
 
 library(haven)   # read .dta files
@@ -24,7 +24,7 @@ library(lfe)     # felm(): fast two-way FE estimation with clustering
 
 script_dir <- tryCatch(dirname(sys.frame(1)$ofile), error = function(e) getwd())
 
-# --- Input file settings (must match Scripts 1a and 1b) ----------------------
+# --- Input file settings (must match Scripts 04_define_moves.R and 03_collapse.R) ----------------------
 PERIOD_COLLAPSED   <- "week"   # "week" or "month" — must match collapse.R / define_moves.R
 MOVE_DEF <- 1        # 1 or 2            — must match define_moves.R
 
@@ -82,6 +82,7 @@ input_path <- file.path(script_dir, "Outputs", "Merged",
 output_dir <- file.path(script_dir, "Outputs", "Regressions")
 output_path <- file.path(output_dir,
                          paste0("results_", PERIOD_COLLAPSED,
+                                "_akm-", CONTROLS_AKM,
                                 "_def",  MOVE_DEF,
                                 "_fe",   FE_LABEL,
                                 "_cl",   CL_LABEL, ".csv"))
@@ -157,7 +158,7 @@ all_results <- list()
 
 for (akm_out in AKM_OUTCOMES) {
         
-        col_high <- paste0("move_to_high_fe_", akm_out)
+        col_high <- paste0("moveTo_highFE_", akm_out)
         
         if (!col_high %in% colnames(df)) {
                 warning("Column '", col_high, "' not found in dataset — skipping AKM outcome.")
@@ -226,10 +227,77 @@ for (akm_out in AKM_OUTCOMES) {
                         NULL
                 })
                 
-                all_results <- c(all_results, list(res1), list(res2))
-        }
-}
-
+                # ------------------------------------------------------------------
+                # Spec 3: Among movers to high-FE plants,
+                #         compare High->High vs Low->High
+                #
+                # Baseline group:
+                #   Low-FE origin  -> High-FE destination
+                #
+                # Treatment group:
+                #   High-FE origin -> High-FE destination
+                #
+                # beta_post               = effect for Low->High
+                # beta_post_x_highhigh    = differential effect for High->High
+                # ------------------------------------------------------------------
+                
+                res3 <- tryCatch({
+                        
+                        # Column names for this AKM outcome
+                        col_to_high   <- paste0("moveTo_highFE_", akm_out)
+                        col_from_high <- paste0("moveFrom_highFE_", akm_out)
+                        
+                        # Restrict sample:
+                        # keep only movers TO high-FE plants
+                        df_sp3 <- df_base %>%
+                                filter(.data[[col_to_high]] == 1)
+                        
+                        # Indicator:
+                        # 1 = High->High
+                        # 0 = Low->High
+                        df_sp3 <- df_sp3 %>%
+                                mutate(
+                                        highhigh = as.integer(
+                                                .data[[col_from_high]] == 1
+                                        ),
+                                        
+                                        post_x_highhigh =
+                                                as.integer(.data[[COL_POST]]) * highhigh
+                                )
+                        
+                        # Regression
+                        f3 <- build_formula(
+                                outcome,
+                                rhs_vars = c(COL_POST,
+                                             "highhigh",
+                                             "post_x_highhigh"),
+                                fe_vars  = FE_VARS,
+                                cluster  = CLUSTER_VAR
+                        )
+                        
+                        fit3 <- felm(f3, data = df_sp3)
+                        
+                        tidy_felm(
+                                fit3,
+                                outcome,
+                                akm_out,
+                                spec = "spec3_highhigh_vs_lowhigh"
+                        )
+                        
+                }, error = function(e) {
+                        warning(
+                                "Spec 3 failed [outcome=",
+                                outcome,
+                                ", akm=",
+                                akm_out,
+                                "]: ",
+                                e$message
+                        )
+                        NULL
+                })
+                
+                all_results <- c(all_results, list(res1), list(res2), list(res3))
+                }}        
 
 # ==============================================================================
 # 5. COMBINE AND SAVE
@@ -250,6 +318,6 @@ results_tbl <- results_tbl %>%
 message("\nResults table: ", nrow(results_tbl), " rows ",
         "(", n_distinct(results_tbl$outcome), " outcomes × ",
         n_distinct(results_tbl$akm_outcome), " classifiers × 2 specs).")
-
+print(head(results_tbl))
 write.csv(results_tbl, output_path, row.names = FALSE)
 message("Saved to: ", output_path)

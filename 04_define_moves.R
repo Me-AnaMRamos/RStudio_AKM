@@ -1,7 +1,7 @@
 # ==============================================================================
-# Script 1b: define_moves.R
+# Script: 04_define_moves.R
 #
-# Takes the collapsed worker-plant-period dataset from Script 1a and the AKM
+# Takes the collapsed worker-plant-period dataset from Script 03_collapsed and the AKM
 # plant FE files from akm.R. For each AKM outcome it defines the destination
 # plant (moveto_plant) and an indicator for whether the worker moved to a
 # high-FE plant (move_to_high_fe), then saves the enriched dataset.
@@ -61,7 +61,6 @@ COL_MOVEDATE <- "movedate"
 COL_PERIOD   <- "period"
 
 # Name of the plant FE column inside the plant FE files (from akm.R).
-COL_FE_PLANT     <- "fe_plant"
 COL_FE_PLANT_STD <- "fe_plant_std"
 
 # --- Paths -------------------------------------------------------------------
@@ -88,6 +87,7 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 # ==============================================================================
 
 df <- read_dta(input_collapsed)
+print(head(df), width=Inf)
 
 message("Loaded collapsed dataset: ", nrow(df), " rows, ",
         n_distinct(df[[COL_WORKER]]), " workers.")
@@ -115,37 +115,10 @@ message("Movers: ", length(movers), " | Non-movers: ",
 df <- df %>%
         mutate(movedate_period = floor_date(.data[[COL_MOVEDATE]], unit = PERIOD_COLLAPSED))
 
+print(head(df), width=Inf)
 
 # ==============================================================================
-# 4. DEFINITION 1 HELPER: PLANT AT MOVEDATE (OUTCOME-INVARIANT)
-# ==============================================================================
-
-# Under Definition 1 the destination plant is the same for every outcome, so
-# we compute it once here rather than inside the outcome loop.
-
-if (MOVE_DEF == 1) {
-        
-        # For each mover, find the plant they were at in the period containing movedate.
-        # If multiple plant rows exist for that period (shouldn't happen after collapse.R,
-        # but handled defensively), take the plant with the most days (i.e. first row
-        # after sorting -- collapse.R already produces one row per worker-plant-period,
-        # so this simply picks the one matching plant for that period).
-        
-        moveto_def1 <- df %>%
-                filter(!is.na(.data[[COL_MOVEDATE]])) %>%
-                filter(.data[[COL_PERIOD]] == movedate_period) %>%
-                group_by(.data[[COL_WORKER]]) %>%
-                slice(1) %>%           # defensive: one row expected per worker
-                ungroup() %>%
-                select(all_of(COL_WORKER), moveto_plant_def1 = all_of(COL_PLANT))
-        
-        message("Definition 1: destination plant resolved for ",
-                nrow(moveto_def1), " movers.")
-}
-
-
-# ==============================================================================
-# 5. LOOP OVER OUTCOMES: MERGE PLANT FE AND CREATE MOVE_TO_HIGH_FE
+# 4. DEFINE DEPARTURE AND DESTINATION PLANT IF NOT YET (IF DEF TWO)
 # ==============================================================================
 
 # Load combined plant FE file once
@@ -158,61 +131,13 @@ if (!file.exists(fe_path)) {
         stop("Combined plant FE file not found:\n", fe_path)
 }
 
-plant_fe_all <- read_dta(fe_path)
-names(plant_fe_all)
+col_moveto <- paste0("move_to_plant")
+col_movefrom <- paste0("move_from_plant")
 
-for (outcome in OUTCOMES) {
-        print(outcome)
-        message("\n--- Outcome: ", outcome, " ---")
-        
-        FE_COL_RAW <- make.names(outcome)
-        FE_COL_STD <- paste0("std_", make.names(outcome))
-        
-        #  --- 5a. Extract only id + current outcome FE
-        
-        plant_fe <- plant_fe_all %>%
-                select(all_of(COL_PLANT),
-                       all_of(FE_COL_RAW),
-                       all_of(FE_COL_STD)) %>%
-                rename(
-                        fe_plant     = all_of(FE_COL_RAW),
-                        fe_plant_std = all_of(FE_COL_STD)
-                )
-
-        # Ensure the plant ID column has the same type as in df (igraph coerces to
-        # character; akm.R restores numeric if the original was numeric).
-        if (is.numeric(df[[COL_PLANT]]) && !is.numeric(plant_fe[[COL_PLANT]])) {
-                plant_fe[[COL_PLANT]] <- as.numeric(plant_fe[[COL_PLANT]])
-        }
-        
-        message("  Plant FE file loaded: ", nrow(plant_fe), " plants.")
-        
-        # --- 5b. Resolve destination plant ----------------------------------------
-        
-        col_moveto <- paste0("moveto_plant_", outcome)
-        
-        if (MOVE_DEF == 1) {
-                
-                # Definition 1: outcome-invariant destination already computed above.
-                # Just rename the shared column for this outcome.
-                df[[col_moveto]] <- NA_real_   # initialise (preserves type flexibility)
-                
-                if (exists("moveto_def1")) {
-                        df <- df %>%
-                                left_join(moveto_def1 %>% rename(!!col_moveto := moveto_plant_def1),
-                                          by = COL_WORKER)
-                        
-                        # left_join creates two columns when the target already exists; keep the
-                        # right-hand one (the joined value) and drop the initialised placeholder.
-                        dup_col <- paste0(col_moveto, ".y")
-                        if (dup_col %in% colnames(df)) {
-                                df[[col_moveto]] <- df[[dup_col]]
-                                df <- df %>% select(-all_of(paste0(col_moveto, ".x")),
-                                                    -all_of(dup_col))
-                        }
-                }
-                
-        } else if (MOVE_DEF == 2) {
+if(MOVE_DEF == 1){
+                df[[col_moveto]]   <- df[["d1_move_to_plant"]]
+                df[[col_movefrom]] <- df[["d1_move_from_plant"]]
+} else if (MOVE_DEF == 2) {                 # Definition 1 already computed in collapsed data
                 
                 # Definition 2: highest-FE plant within WINDOW_PERIODS of movedate,
                 # using this outcome's plant FE values.
@@ -235,14 +160,27 @@ for (outcome in OUTCOMES) {
                                         .data[[COL_PERIOD]] <= (movedate_period + period_width)
                         ) %>%
                         # Attach FE values for the plant observed in each row of the window
-                        left_join(plant_fe %>% select(all_of(COL_PLANT), all_of(COL_FE_PLANT)),
+                        left_join(plant_fe %>% select(all_of(COL_PLANT), all_of(COL_FE_PLANT_STD)),
                                   by = COL_PLANT) %>%
                         group_by(.data[[COL_WORKER]]) %>%
                         # Pick the plant with the highest FE within the window.
                         # If multiple rows tie, slice_max keeps one deterministically.
-                        slice_max(order_by = .data[[COL_FE_PLANT]], n = 1, with_ties = FALSE) %>%
+                        slice_max(order_by = .data[[COL_FE_PLANT_STD]], n = 1, with_ties = FALSE) %>%
                         ungroup() %>%
                         select(all_of(COL_WORKER), !!col_moveto := all_of(COL_PLANT))
+                
+                movefrom_def2 <- df %>%
+                        filter(!is.na(.data[[COL_MOVEDATE]])) %>%
+                        filter(
+                                .data[[COL_PERIOD]] >= (movedate_period - period_width) &
+                                        .data[[COL_PERIOD]] <= (movedate_period + period_width)
+                        ) %>%
+                        left_join(plant_fe %>% select(all_of(COL_PLANT), all_of(COL_FE_PLANT_STD)),
+                                  by = COL_PLANT) %>%
+                        group_by(.data[[COL_WORKER]]) %>%
+                        slice_min(order_by = .data[[COL_FE_PLANT_STD]], n = 1, with_ties = FALSE) %>%
+                        ungroup() %>%
+                        select(all_of(COL_WORKER), !!col_movefrom := all_of(COL_PLANT))
                 
                 message("  Definition 2 (window = +/-", WINDOW_PERIODS, " ", PERIOD_COLLAPSED,
                         "s): destination resolved for ", nrow(moveto_def2), " movers.")
@@ -258,54 +196,126 @@ for (outcome in OUTCOMES) {
                                             -all_of(dup_col))
                 }
                 
-        } else {
-                stop("MOVE_DEF must be 1 or 2.")
-        }
+                # Attach FE-based departure plant
+                df[[col_movefrom]] <- NA_real_
+                
+                df <- df %>%
+                        left_join(movefrom_def2, by = COL_WORKER)
+                
+                dup_col <- paste0(col_movefrom, ".y")
+                
+                if (dup_col %in% colnames(df)) {
+                        df[[col_movefrom]] <- df[[dup_col]]
+                        
+                        df <- df %>%
+                                select(
+                                        -all_of(paste0(col_movefrom, ".x")),
+                                        -all_of(dup_col)
+                                )
+                }
+                
+        } 
         
         # Non-movers always have NA destination (movedate is NA so col_moveto stays NA).
+
+# ==============================================================================
+# 4. LOOP OVER OUTCOMES: MERGE PLANT FE AND CREATE MOVE_TO_HIGH_FE
+# ==============================================================================
+
+for (outcome in OUTCOMES) {
+        message("\n--- Outcome: ", outcome, " ---")
         
-        # --- 5c. Merge plant FE for destination plant -----------------------------
+        FE_COL_STD <- paste0("std_", make.names(outcome))
+        
+        #  --- 5a. Extract only id + current outcome FE
+        
+        plant_fe <- plant_fe_all %>%
+                select(all_of(COL_PLANT),
+                       all_of(FE_COL_STD)) %>%
+                rename(
+                        fe_plant_std = all_of(FE_COL_STD)
+                )
+        
+        # Ensure the plant ID column has the same type as in df (igraph coerces to
+        # character; akm.R restores numeric if the original was numeric).
+        if (is.numeric(df[[COL_PLANT]]) && !is.numeric(plant_fe[[COL_PLANT]])) {
+                plant_fe[[COL_PLANT]] <- as.numeric(plant_fe[[COL_PLANT]])
+        }
+        
+        message("  Plant FE file loaded: ", nrow(plant_fe), " plants.")
+        
+        # --- 5b. Resolve destination plant ----------------------------------------
+        
+        message("Outcome: ", outcome)
+        
+        # --- 5c. Merge plant FE for destination and departure plants -------------
         # We want the FE of the *destination* plant, not the plant in each row.
         # Rename the plant ID in the FE file to col_moveto so the join matches on
         # the destination plant column.
         
-        col_fe_dest     <- paste0("fe_plant_",     outcome)
-        col_fe_dest_std <- paste0("fe_plant_std_", outcome)
+        col_fe_dest_std <- paste0("FEplant_des_", outcome)
+        col_fe_dep_std  <- paste0("FEplant_dep_", outcome)
         
+        # Destination plant FE
         plant_fe_renamed <- plant_fe %>%
                 select(
                         !!col_moveto    := all_of(COL_PLANT),
-                        !!col_fe_dest   := all_of(COL_FE_PLANT),
                         !!col_fe_dest_std := all_of(COL_FE_PLANT_STD)
+                )
+        names(df)
+        df <- df %>%
+                inner_join(plant_fe_renamed, by = col_moveto)
+        
+        message("  Merged destination plant FE (", col_fe_dest_std, ").")
+        
+        # Departure plant FE (plant observed in each row, i.e. the origin plant)
+        plant_fe_dep <- plant_fe %>%
+                select(
+                        !!col_movefrom    := all_of(COL_PLANT),
+                        !!col_fe_dep_std := all_of(COL_FE_PLANT_STD)
                 )
         
         df <- df %>%
-                left_join(plant_fe_renamed, by = col_moveto)
+                left_join(plant_fe_dep, by = col_movefrom)
         
-        message("  Merged destination plant FE (", col_fe_dest, ").")
+        message("  Merged departure plant FE (", col_fe_dep_std, ").")
         
-        # --- 5d. Create move_to_high_fe indicator ---------------------------------
+        # --- 5d. Create high-FE indicators for destination and departure ----------
         # 1 if destination plant FE is above the median of the full plant FE
         # distribution for this outcome (using the standardised FE for a
         # scale-invariant threshold). Missing for non-movers.
         
         fe_median <- median(plant_fe[[COL_FE_PLANT_STD]], na.rm = TRUE)
         
-        col_high_fe <- paste0("move_to_high_fe_", outcome)
+        col_high_fe <- paste0("moveTo_highFE_", outcome)
+        col_high_fe_dep  <- paste0("moveFrom_highFE_", outcome)
+
         
         df <- df %>%
-                mutate(!!col_high_fe := case_when(
+                mutate(
+                        !!col_high_fe := case_when(
                         is.na(.data[[col_moveto]])    ~ NA_integer_,   # non-mover
                         is.na(.data[[col_fe_dest_std]]) ~ NA_integer_, # destination FE unavailable
                         .data[[col_fe_dest_std]] > fe_median ~ 1L,
-                        TRUE                          ~ 0L
-                ))
+                        TRUE ~ 0L),
+                        !!col_high_fe_dep := case_when(
+                                is.na(.data[[col_moveto]])     ~ NA_integer_,   # non-mover
+                                is.na(.data[[col_fe_dep_std]]) ~ NA_integer_,
+                                .data[[col_fe_dep_std]] > fe_median ~ 1L,
+                                TRUE ~ 0L
+                        )
+                )
         
         n_high <- sum(df[[col_high_fe]] == 1L, na.rm = TRUE)
         n_low  <- sum(df[[col_high_fe]] == 0L, na.rm = TRUE)
+        n_dep_high  <- sum(df[[col_high_fe_dep]]  == 1L, na.rm = TRUE)
+        n_dep_low   <- sum(df[[col_high_fe_dep]]  == 0L, na.rm = TRUE)
         
         message("  move_to_high_fe_", outcome, ": ",
-                n_high, " high-FE obs, ", n_low, " low-FE obs ",
+                n_high, " high-FE obs, ", n_low, " low-FE obs ")
+        
+        message("  move_from_high_fe_", outcome, ": ",
+                n_dep_high,  " high-FE obs, ", n_dep_low,  " low-FE obs ",
                 "(median FE_std threshold = ", round(fe_median, 4), ").")
 }
 
@@ -318,6 +328,16 @@ df <- df %>% select(-movedate_period)
 
 write_dta(df, output_path)
 
-print(df)
+print(
+        head(
+                df %>%
+                        filter(!(.data[[COL_WORKER]] %in% c(5, 43, 48))) %>%
+                        select(-starts_with("log_")),
+                n = 10
+        ),
+        width = Inf
+)
+names(df)
+
 message("\nFinal dataset: ", nrow(df), " rows, ", ncol(df), " columns.")
 message("Saved to: ", output_path)

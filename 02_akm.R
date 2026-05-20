@@ -71,16 +71,23 @@ run_akm <- function(df, outcome, worker_id, plant_id, time_var, controls = NULL)
 #    the graph (saves time when running multiple outcomes on the same data).
 # ==============================================================================
 
-run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
-                             controls = NULL, cached_comps = NULL) {
+run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var, controls = NULL, comp_table,
+                             valid_comps) {
         
         # --- Input checks ----------------------------------------------------------
         # Stop early with a clear message if something is wrong with the data.
         
         required_cols <- c(outcome, worker_id, plant_id, time_var, controls)
+        print(required_cols)
+        print(controls)
+        
+        
         missing       <- setdiff(required_cols, colnames(df))
-        if (length(missing) > 0)
-                stop("These columns are missing from the data: ", paste(missing, collapse = ", "))
+        
+        if (length(missing) > 0){
+                print(names(df))
+                print(required_cols)
+                stop("These columns are missing from the data: ", paste(missing, collapse = ", "))}
         
         if (any(is.na(df[[worker_id]])))
                 stop("Worker ID '", worker_id, "' has missing values.")
@@ -90,80 +97,6 @@ run_akm_pipeline <- function(df, outcome, worker_id, plant_id, time_var,
         
         if (!is.numeric(df[[outcome]]))
                 stop("Outcome variable '", outcome, "' must be numeric.")
-        
-        # --- Connected components --------------------------------------------------
-        # Worker and plant FEs are only jointly identified within connected components
-        # of the worker-plant mobility graph (groups linked by workers who switched plants).
-        # We find these components using igraph, or reuse them from a previous run.
-        
-        if (!is.null(cached_comps)) {
-                
-                message("Using cached connected components.")
-                comp_table <- cached_comps
-                
-        } else {
-                
-                message("Building worker-plant mobility graph...")
-                
-                # Each unique worker-plant pair is an edge in the graph.
-                # We prefix IDs with "w_" and "p_" so igraph doesn't confuse a worker
-                # and a plant that happen to share the same numeric ID.
-                edges <- df %>%
-                        select(all_of(c(worker_id, plant_id))) %>%
-                        distinct() %>%
-                        mutate(across(all_of(worker_id), ~ paste0("w_", .)),
-                               across(all_of(plant_id),  ~ paste0("p_", .)))
-                
-                g     <- graph_from_data_frame(edges, directed = FALSE)
-                comps <- components(g)  # assigns each node a component number
-                
-                # Put component assignments back into a table with the original IDs.
-                # We strip the "w_" / "p_" prefixes we added earlier.
-                membership <- data.frame(vertex  = names(comps$membership),
-                                         comp_id = as.integer(comps$membership))
-                
-                worker_comps <- membership[startsWith(membership$vertex, "w_"), ]
-                plant_comps  <- membership[startsWith(membership$vertex, "p_"), ]
-                
-                worker_comps[[worker_id]] <- sub("^w_", "", worker_comps$vertex)
-                plant_comps[[plant_id]]   <- sub("^p_", "", plant_comps$vertex)
-                
-                # Restore original numeric types if needed (igraph converts everything to string)
-                if (is.numeric(df[[worker_id]])) worker_comps[[worker_id]] <- as.numeric(worker_comps[[worker_id]])
-                if (is.numeric(df[[plant_id]]))  plant_comps[[plant_id]]   <- as.numeric(plant_comps[[plant_id]])
-                
-                # Join component IDs back to the obs-level data
-                comp_table <- df %>%
-                        left_join(worker_comps[, c(worker_id, "comp_id")], by = worker_id) %>%
-                        select(all_of(c(worker_id, plant_id, "comp_id"))) %>%
-                        distinct()
-                
-                message("Found ", comps$no, " connected component(s).")
-        }
-        
-        # Merge component IDs into the main data frame
-        df <- df %>%
-                left_join(comp_table %>% select(all_of(c(worker_id, "comp_id"))) %>% distinct(),
-                          by = worker_id)
-        
-        # --- Drop components with only one plant -----------------------------------
-        # AKM plant FEs are not identified without worker mobility across plants.
-        # Any component where all workers stayed at the same plant is dropped.
-        
-        plants_per_comp <- comp_table %>%
-                group_by(comp_id) %>%
-                summarise(n_plants = n_distinct(.data[[plant_id]]), .groups = "drop")
-        
-        valid_comps <- plants_per_comp$comp_id[plants_per_comp$n_plants > 1]
-        n_dropped   <- n_distinct(comp_table$comp_id) - length(valid_comps)
-        
-        if (n_dropped > 0)
-                message("Dropped ", n_dropped, " component(s) with only one plant (FEs not identified).")
-        
-        df <- df %>% filter(comp_id %in% valid_comps)
-        
-        if (nrow(df) == 0)
-                stop("No observations left after dropping single-plant components.")
         
         # --- Estimate AKM for each valid component ---------------------------------
         # We loop over components, run the estimator, and collect results in lists.
@@ -293,6 +226,94 @@ if (length(period_match) > 0) {
         CONTROLS <- character(0)
 }
 
+
+
+
+message("Building worker-plant mobility graph...")
+
+# --- Connected components --------------------------------------------------
+# Worker and plant FEs are only jointly identified within connected components
+# of the worker-plant mobility graph (groups linked by workers who switched plants).
+# We find these components using igraph, or reuse them from a previous run.
+
+
+edges <- df %>%
+        select(all_of(c(i, j))) %>%
+        distinct() %>%
+        mutate(
+                across(all_of(i), ~ paste0("w_", .)),
+                across(all_of(j), ~ paste0("p_", .))
+        )
+
+g <- graph_from_data_frame(edges, directed = FALSE)
+
+comps <- components(g)
+
+membership <- data.frame(
+        vertex  = names(comps$membership),
+        comp_id = as.integer(comps$membership)
+)
+
+worker_comps <- membership[startsWith(membership$vertex, "w_"), ]
+plant_comps  <- membership[startsWith(membership$vertex, "p_"), ]
+
+worker_comps[[i]] <- sub("^w_", "", worker_comps$vertex)
+plant_comps[[j]]  <- sub("^p_", "", plant_comps$vertex)
+
+if (is.numeric(df[[i]]))
+        worker_comps[[i]] <- as.numeric(worker_comps[[i]])
+
+if (is.numeric(df[[j]]))
+        plant_comps[[j]] <- as.numeric(plant_comps[[j]])
+
+comp_table <- df %>%
+        left_join(worker_comps[, c(i, "comp_id")], by = i) %>%
+        select(all_of(c(i, j, "comp_id"))) %>%
+        distinct()
+
+# --- Drop components with only one plant -----------------------------------
+# AKM plant FEs are not identified without worker mobility across plants.
+# Any component where all workers stayed at the same plant is dropped.
+
+plants_per_comp <- comp_table %>%
+        group_by(comp_id) %>%
+        summarise(
+                n_plants = n_distinct(.data[[j]]),
+                .groups = "drop"
+        )
+
+valid_comps <- plants_per_comp$comp_id[
+        plants_per_comp$n_plants > 1
+]
+
+dropped_comps <- plants_per_comp %>%
+        filter(n_plants <= 1)
+
+cat("\nDropped components:\n")
+print(dropped_comps)
+
+message(
+        "Dropped ",
+        nrow(dropped_comps),
+        " component(s) with only one plant (FEs not identified)."
+)
+
+df <- df %>%
+        left_join(
+                comp_table %>%
+                        select(all_of(c(i, "comp_id"))) %>%
+                        distinct(),
+                by = i
+        )
+
+
+df <- df %>% filter(comp_id %in% valid_comps)
+
+if (nrow(df) == 0)
+        stop("No observations left after dropping single-plant components.")
+
+
+
 outcomes <- c("log_rev_per_hour", "log_rev", "log_quant",
               "log_tottime", "log_avgtime", "log_value")
 
@@ -300,40 +321,30 @@ outcomes <- c("log_rev_per_hour", "log_rev", "log_quant",
 all_worker_fe <- list()
 all_plant_fe  <- list()
 
-# --- Run first outcome and cache the connected components -------------------
-# We compute the mobility graph once and reuse the component assignments for all subsequent outcomes.
-message("\n--- Outcome: ", outcomes[1], " ---")
-first_result <- run_akm_pipeline(df, outcomes[1], i, j, t, CONTROLS)
-
-names(first_result$plant_fe)
-
-# Keep only id + FE column, rename FE to outcome name
-all_worker_fe[[outcomes[1]]] <- first_result$worker_fe %>%
-        select(all_of(i), fe_worker) %>%
-        rename(!!outcomes[1] := fe_worker)
-
-all_plant_fe[[outcomes[1]]] <- first_result$plant_fe %>%
-        select(all_of(j), fe_plant, fe_plant_std) %>%
-        rename(
-        !!outcomes[1] := fe_plant,
-        !!paste0("std_", outcomes[1]) := fe_plant_std
-        )
-
-cached_components <- first_result$components  # reuse for all remaining outcomes
-
-# --- Loop over remaining outcomes using the cached components ---------------
-
-for (outcome in outcomes[-1]) {
+# --- Run AKM for each outcome -----------------------------------------------
+for (outcome in outcomes) {
         
         message("\n--- Outcome: ", outcome, " ---")
-        result <- run_akm_pipeline(df, outcome, i, j, t, CONTROLS,
-                                   cached_comps = cached_components)
         
+        result <- run_akm_pipeline(
+                df,
+                outcome,
+                i,
+                j,
+                t,
+                CONTROLS,
+                comp_table,
+                valid_comps
+        )
+        
+        names(result$plant_fe)
+        
+        # Worker FE
         all_worker_fe[[outcome]] <- result$worker_fe %>%
                 select(all_of(i), fe_worker) %>%
                 rename(!!outcome := fe_worker)
         
-        
+        # Plant FE
         all_plant_fe[[outcome]] <- result$plant_fe %>%
                 select(all_of(j), fe_plant, fe_plant_std) %>%
                 rename(
@@ -354,6 +365,8 @@ plant_fe_all <- Reduce(
         all_plant_fe
 )
 
+plant_fe_all$plant <- as.numeric(as.character(plant_fe_all$plant))
+worker_fe_all$id_employee <- as.numeric(as.character(worker_fe_all$id_employee))
 
 # Save combined files
 write_dta(worker_fe_all,
@@ -363,10 +376,10 @@ write_dta(worker_fe_all,
 write_dta(plant_fe_all,
           file.path(output_dir,
                     paste0("plant_fe_all_", CONTROLS_LABEL, ".dta")))
-summary(cached_components)
+summary(comp_table)
 
 # Components only once
-write_dta(cached_components,
+write_dta(comp_table,
           file.path(output_dir,
                     paste0("components_", CONTROLS_LABEL, ".dta")))
 
