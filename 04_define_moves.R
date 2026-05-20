@@ -1,5 +1,5 @@
 # ==============================================================================
-# Script: 04_define_moves.R
+# Script: 04_merge.R
 #
 # Takes the collapsed worker-plant-period dataset from Script 03_collapsed and the AKM
 # plant FE files from akm.R. For each AKM outcome it defines the destination

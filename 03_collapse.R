@@ -508,8 +508,8 @@ collapsed <- df %>%
                 post             = max(post, na.rm = TRUE),
                 
                 # Carry through worker-level move information
-                d1_move_to_plant   = first(dest_plant),
-                d1_move_from_plant = first(dep_plant),
+                d1_moved_to   = first(dest_plant),
+                d1_moved_from = first(dep_plant),
                 movedate        = first(movedate),
                 
                 # Keep date of first day in the period for reference

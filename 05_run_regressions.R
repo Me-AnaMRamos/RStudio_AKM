@@ -1,7 +1,7 @@
 # ==============================================================================
 # Script: 05_run_regressions.R
 #
-# Reads the event study dataset from Script 04_define_moves.R and runs two regression
+# Reads the event study dataset from Script 04_merge.R and runs two regression
 # specifications for every (outcome variable) x (AKM FE classifier) combination:
 #
 #   Spec 1 — outcome ~ post + high + post*high | worker + period FEs | cluster
@@ -158,10 +158,20 @@ all_results <- list()
 
 for (akm_out in AKM_OUTCOMES) {
         
-        col_high <- paste0("moveTo_highFE_", akm_out)
+        # Column names for this AKM outcome
+        col_to_high   <- paste0("moveTo_highFE_", akm_out)
+        col_from_high <- paste0("moveFrom_highFE_", akm_out)
         
-        if (!col_high %in% colnames(df)) {
-                warning("Column '", col_high, "' not found in dataset — skipping AKM outcome.")
+        missing_cols <- c(col_to_high, col_from_high)[
+                !c(col_to_high, col_from_high) %in% colnames(df)
+        ]
+        
+        if (length(missing_cols) > 0) {
+                warning(
+                        "Missing columns: ",
+                        paste(missing_cols, collapse = ", "),
+                        " — skipping AKM outcome."
+                )
                 next
         }
         
@@ -177,8 +187,10 @@ for (akm_out in AKM_OUTCOMES) {
         
         df_reg <- df %>%
                 mutate(
-                        high      = as.integer(.data[[col_high]]),
-                        post_x_high = as.integer(.data[[COL_POST]]) * high
+                        to_high      = as.integer(.data[[col_to_high]]),
+                        from_high      = as.integer(.data[[col_from_high]]),
+                        post_x_high = as.integer(.data[[COL_POST]]) * to_high,
+                        post_x_high_to_high = as.integer(.data[[COL_POST]]) * to_high * from_high
                 )
         
         for (outcome in REG_OUTCOMES) {
@@ -191,7 +203,7 @@ for (akm_out in AKM_OUTCOMES) {
                 # Drop rows where the outcome or post is missing.
                 # For Spec 1 also drop rows where high is missing (non-movers).
                 df_base <- df_reg %>% filter(!is.na(.data[[outcome]]), !is.na(.data[[COL_POST]]))
-                df_sp1  <- df_base  %>% filter(!is.na(high))
+                df_sp1  <- df_base  %>% filter(!is.na(to_high))
                 
                 message("  Outcome: ", outcome,
                         " | n_base = ", nrow(df_base),
@@ -202,7 +214,7 @@ for (akm_out in AKM_OUTCOMES) {
                 # ------------------------------------------------------------------
                 res1 <- tryCatch({
                         f1  <- build_formula(outcome,
-                                             rhs_vars = c(COL_POST, "high", "post_x_high"),
+                                             rhs_vars = c(COL_POST, "to_high", "post_x_high"),
                                              fe_vars  = FE_VARS,
                                              cluster  = CLUSTER_VAR)
                         fit1 <- felm(f1, data = df_sp1)
@@ -242,10 +254,6 @@ for (akm_out in AKM_OUTCOMES) {
                 # ------------------------------------------------------------------
                 
                 res3 <- tryCatch({
-                        
-                        # Column names for this AKM outcome
-                        col_to_high   <- paste0("moveTo_highFE_", akm_out)
-                        col_from_high <- paste0("moveFrom_highFE_", akm_out)
                         
                         # Restrict sample:
                         # keep only movers TO high-FE plants
