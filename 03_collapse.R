@@ -55,6 +55,7 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 # ==============================================================================
 
 df      <- read_dta(input_data)
+summary(df)
 workers <- read_dta(input_workers)
 
 message("Loaded data: ", nrow(df), " rows.")
@@ -91,7 +92,7 @@ message("After filtering to valid workers: ", nrow(df), " rows, ",
 # ------------------------------------------------------------------------------
 
 SPELL_MODE       <- "multi"   # "single" | "multi"
-CONTROL_GROUP <- "window"  # "window" | "random"
+WINDOW_MODE <- "on"  # "on" | "off"
 MIN_SPELL_LENGTH <- 2L        # [ANALYST DECISION – multi mode only]
 # minimum spell duration (days) to be selected
 # Set after inspecting the diagnostics below.
@@ -153,6 +154,26 @@ message("  (worker, movedate) pairs with dest & dep plant : ", nrow(move_plants)
 message("  Workers covered                                : ",
         n_distinct(move_plants[[COL_WORKER]]))
 
+summary(move_plants)
+
+# ==============================================================================
+# 3.2 IDENTIFY MOVERS / NON-MOVERS
+# ==============================================================================
+
+all_movers <- n_spells_per_worker %>%
+        filter(n_spells > 1) %>%
+        pull(.data[[COL_WORKER]])
+
+non_movers <- n_spells_per_worker %>%
+        filter(n_spells == 1) %>%
+        pull(.data[[COL_WORKER]])
+
+non_mover_obs <- df %>%
+        filter(.data[[COL_WORKER]] %in% non_movers)
+
+message("\nNon-movers identified: ", length(non_movers),
+        " workers with ", nrow(non_mover_obs), " observations total")
+
 # ==============================================================================
 if (SPELL_MODE == "single") {
         # ==============================================================================
@@ -166,8 +187,17 @@ if (SPELL_MODE == "single") {
                 ungroup() %>%
                 select(-n_spells) %>%   # n_spells will be joined below
                 left_join(n_spells_per_worker, by = COL_WORKER) %>%
-                mutate(movedate = if_else(n_spells > 1, spell_start_dt, as.Date(NA)))
-        
+                mutate(
+                        treated = if_else(n_spells > 1, 1L, 0L),
+                        movedate = if_else(treated == 1L,
+                                           spell_start_dt,
+                                           as.Date(NA)),
+                        movedate_id = if_else(
+                                treated == 1L,
+                                row_number(),
+                                NA_integer_
+                        )
+                )        
         message("\nMobility summary (single mode):")
         message("  Total workers : ", n_distinct(df[[COL_WORKER]]))
         message("  Movers        : ", sum(longest_spell$n_spells > 1))
@@ -176,7 +206,13 @@ if (SPELL_MODE == "single") {
         # Merge movedate back onto the main dataset
         df <- df %>%
                 left_join(
-                        longest_spell %>% select(all_of(COL_WORKER), movedate),
+                        longest_spell %>%
+                                select(
+                                        all_of(COL_WORKER),
+                                        movedate,
+                                        movedate_id,
+                                        treated
+                                ),
                         by = COL_WORKER
                 )
         
@@ -246,11 +282,41 @@ if (SPELL_MODE == "single") {
                 # they are already ordered by spell_start_dt within each worker.
                 arrange(.data[[COL_WORKER]], spell_start_dt)
         
+        # Drop first spell for every worker
+        # (only keep spells corresponding to actual moves)
+        qualifying_spells <- qualifying_spells %>%
+                group_by(.data[[COL_WORKER]]) %>%
+                filter(row_number() > 1) %>%
+                ungroup()
+        
+        
         n_workers_any <- n_distinct(qualifying_spells[[COL_WORKER]])
+        
         message("\nMulti-spell selection (MIN_SPELL_LENGTH = ", MIN_SPELL_LENGTH, " days):")
         message("  Workers with >= 1 qualifying spell : ", n_workers_any,
                 " / ", n_distinct(df[[COL_WORKER]]))
-        message("  Total qualifying spells selected   : ", nrow(qualifying_spells))
+        message("  Total qualifying spells after dropping non-movers  : ", nrow(qualifying_spells))
+        
+        # Workers who are movers overall but have no qualifying move-spells
+        movers_no_qualifying_spells <- setdiff(
+                all_movers,
+                unique(qualifying_spells[[COL_WORKER]])
+        )
+        
+        message("  Movers with NO qualifying move-spells   : ",
+                length(movers_no_qualifying_spells))
+        
+        # ==============================================================================
+        # 3.B.2  ASSIGN MOVEDATE IDs
+        # ==============================================================================
+        # Each unique movedate gets an ID. If two workers share the same calendar
+        # movedate they get different IDs because the event is worker-specific.
+        movedate_ids <- qualifying_spells %>%
+                select(all_of(COL_WORKER), movedate = spell_start_dt) %>%
+                arrange(.data[[COL_WORKER]], movedate) %>%
+                mutate(movedate_id = row_number())
+        
+        message("Total (worker, movedate) events: ", nrow(movedate_ids))
         
         # ============================================================================
         # 3.B.3  Diagnostics – dispersion of selected movedates within workers
@@ -267,153 +333,188 @@ if (SPELL_MODE == "single") {
                 ungroup()
         
         if (nrow(gaps) > 0) {
+                min_gap<-min(gaps$gap_to_prev)
                 message("\nGap between consecutive selected movedates (days), across all workers:")
-                print(summary(gaps$gap_to_prev))
+                print(min_gap)
                 message("  Minimum gap observed : ", min(gaps$gap_to_prev), " days")
                 message("  Median gap observed  : ", median(gaps$gap_to_prev), " days")
         } else {
                 message("\nNo worker has more than one qualifying spell – gap diagnostics skipped.")
         }
         
-        if (CONTROL_GROUP == "window" ){
-                # ============================================================================
-                # 3.B.4  Define window half-width and check for overlap
-                # ============================================================================
-                
-                # Default window: MIN_SPELL_LENGTH / 2 (rounded down) on each side,
-                # so total window width < MIN_SPELL_LENGTH → windows cannot overlap when
-                # spells are >= MIN_SPELL_LENGTH apart.
-                WINDOW_HALF <- floor(MIN_SPELL_LENGTH / 2)
-                
-                message("\nWindow half-width : ", WINDOW_HALF, " days  (total window = ",
-                        2 * WINDOW_HALF + 1, " days, centred on movedate)")
-                
-                if (nrow(gaps) > 0 && min(gaps$gap_to_prev) < 2 * WINDOW_HALF + 1) {
-                        warning("Some consecutive movedates are fewer than ", 2 * WINDOW_HALF + 1,
-                                " days apart – windows will overlap for those pairs. ",
-                                "Consider increasing MIN_SPELL_LENGTH or reducing WINDOW_HALF manually.")
-                } else {
-                        message("  Windows are guaranteed non-overlapping for all workers.")
-                }
-                
-                # ============================================================================
-                # 3.B.5  Assign movedates and subset observations within windows
-                # ============================================================================
-                
-                # Build a lookup: worker × movedate → window [lo, hi]
-                movedate_lookup <- qualifying_spells %>%
-                        select(all_of(COL_WORKER), movedate = spell_start_dt) %>%
-                        mutate(
-                                win_lo = movedate - WINDOW_HALF,
-                                win_hi = movedate + WINDOW_HALF
-                        )
-                
-                # Cross-join each observation with the movedates for its worker, then keep
-                # only rows that fall inside exactly one window.
-                # (When windows are non-overlapping, at most one window matches per row.)
-                df <- df %>%
-                        left_join(movedate_lookup, by = COL_WORKER,
-                                  relationship = "many-to-many") %>%
-                        filter(!is.na(movedate),                    # drop workers with no qualifying spell
-                               .data[[COL_DATE]] >= win_lo,
-                               .data[[COL_DATE]] <= win_hi) %>%
-                        # In the (rare) overlap case keep the nearest movedate
-                        mutate(dist_to_move = abs(as.integer(.data[[COL_DATE]] - movedate))) %>%
-                        group_by(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
-                        slice_min(dist_to_move, n = 1, with_ties = FALSE) %>%
-                        ungroup() %>%
-                        select(-win_lo, -win_hi, -dist_to_move) %>%
-                        arrange(.data[[COL_WORKER]], movedate, .data[[COL_DATE]])
-                
-                message("\nPost-windowing dataset:")
-                message("  Rows retained : ", nrow(df))
-                message("  Workers       : ", n_distinct(df[[COL_WORKER]]))
-                message("  Unique movedates assigned : ", n_distinct(df$movedate))
-            
-        } else if (CONTROL_GROUP == "random"){
-                # ============================================================================
-                #    3.B.5 (random)  Assign movedates via random sampling
-                # ============================================================================
-                # For each worker × qualifying movedate, draw a random sample of size
-                # SAMPLE_N from all observations of that worker (the full date range,
-                # not restricted to any window).  Each drawn observation is labelled
-                # with that movedate.  Observations not drawn for any movedate are dropped.
-                #
-                # Sampling is WITHOUT replacement within each worker × movedate draw.
-                # Across movedates of the same worker the same calendar day CAN appear
-                # more than once (once per movedate it was drawn for), which is the
-                # intended multi-event-study structure.  If you want each day to appear
-                # at most once across all movedates for a worker, set
-                # -------------------------------------------------------------------------
-                
-                SAMPLE_N <- 2 * WINDOW_HALF + 1  # default: same budget as the window approach
-
-                # ---- draw samples -------------------------------------------------------
-                set.seed(42)  # for reproducibility; change or remove as needed
-                
-                
-                df_random <- qualifying_spells %>%
-                        select(all_of(COL_WORKER), movedate = spell_start_dt) %>%
-                        # attach all observations for that worker
-                        left_join(df, by = COL_WORKER, relationship = "many-to-many") %>%
-                        # sample within each worker × movedate block
-                        group_by(.data[[COL_WORKER]], movedate) %>%
-                        group_modify(function(block, key) {
-                                n_avail <- nrow(block)
-                                n_draw  <- min(SAMPLE_N, n_avail)
-                                if (n_avail < SAMPLE_N) {
-                                        warning(sprintf(
-                                                "Worker %s, movedate %s: only %d obs available, drew %d (< SAMPLE_N = %d).",
-                                                key[[COL_WORKER]], key$movedate, n_avail, n_draw, SAMPLE_N
-                                        ))
-                                }
-                                block[sample(n_avail, n_draw, replace = FALSE), ]
-                        }) %>%
-                        ungroup()
-                
-                df <- df_random %>%
-                        arrange(.data[[COL_WORKER]], .data[[COL_DATE]], movedate) %>%
-                        group_by(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
-                        slice(1) %>%
-                        ungroup() %>%
-                        # Add a sentinel row at exactly each (worker, movedate)
-                        # We carry the plant from the nearest sampled observation.
-                        bind_rows(
-                                df_random %>%
-                                        arrange(.data[[COL_WORKER]], movedate,
-                                                abs(as.integer(.data[[COL_DATE]] - movedate))) %>%
-                                        group_by(.data[[COL_WORKER]], movedate) %>%
-                                        slice(1) %>%
-                                        ungroup() %>%
-                                        mutate(!!COL_DATE := movedate)   # set date = movedate exactly
-                        ) %>%
-                        # Re-dedup in case the sentinel date coincidentally matched a sampled date
-                        arrange(.data[[COL_WORKER]], .data[[COL_DATE]], movedate) %>%
-                        group_by(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
-                        slice(1) %>%
-                        ungroup() %>%
-                        arrange(.data[[COL_WORKER]], movedate, .data[[COL_DATE]])
-                
-                message("\nPost-sampling dataset (random mode):")
-                message("  SAMPLE_N                        : ", SAMPLE_N)
-                message("  SAMPLE_UNIQUE_ACROSS_MOVEDATES  : ", SAMPLE_UNIQUE_ACROSS_MOVEDATES)
-                message("  Rows retained                   : ", nrow(df))
-                message("  Workers                         : ", n_distinct(df[[COL_WORKER]]))
-                message("  Unique movedates assigned       : ", n_distinct(df$movedate))      
+        # ============================================================================
+        # 3.B.4  Define window half-width and check for overlap
+        # ============================================================================
+        
+        # Default window: MIN_SPELL_LENGTH / 2 (rounded down) on each side,
+        # so total window width < MIN_SPELL_LENGTH → windows cannot overlap when
+        # spells are >= MIN_SPELL_LENGTH apart.
+        WINDOW_HALF <- 3 # floor(min_gap / 2)
+        
+        message("\nWindow half-width : ", WINDOW_HALF, " days  (total window = ",
+                2 * WINDOW_HALF + 1, " days, centred on movedate)")
+        
+        if (nrow(gaps) > 0 && min(gaps$gap_to_prev) < 2 * WINDOW_HALF + 1) {
+                warning("Some consecutive movedates are fewer than ", 2 * WINDOW_HALF + 1,
+                        " days apart – windows will overlap for those pairs. ",
+                        "Consider increasing MIN_SPELL_LENGTH or reducing WINDOW_HALF manually.")
         } else {
-                stop("CONTROL_GROUP must be 'window' or 'random'. Got: '", CONTROL_GROUP, "'")
+                message("  Windows are guaranteed non-overlapping for all workers.")
         }
+        
+        # ============================================================================
+        # 3.B.5  Assign movedates and subset observations within windows
+        # ============================================================================
+        
+        # Build a lookup: worker × movedate → window [lo, hi]
+        movedate_lookup <- qualifying_spells %>%
+                select(all_of(COL_WORKER), movedate = spell_start_dt) %>%
+                mutate(
+                        win_lo = movedate - WINDOW_HALF,
+                        win_hi = movedate + WINDOW_HALF
+                )
+        
+        summary(movedate_lookup)
+        summary(df)
+        
+        # ==============================================================================
+        # SAVE ORIGINAL FULL PANEL
+        # Needed later for control sampling
+        # ==============================================================================
+        df_full <- df
+        
+        # Cross-join each observation with the movedates for its worker
+        # One sub-panel per movedate with size window/half*2, centered around movedate
+        df <- df %>%
+                left_join(movedate_lookup, by = COL_WORKER,
+                          relationship = "many-to-many") %>%
+                filter(!is.na(movedate)) %>%
+                { if (is.finite(WINDOW_HALF)) {
+                        filter(., .data[[COL_DATE]] >= win_lo,
+                               .data[[COL_DATE]] <= win_hi)
+                } else . } %>%
+                select(-win_lo, -win_hi) %>%
+                arrange(.data[[COL_WORKER]], movedate, .data[[COL_DATE]])
+            
+ 
         
         # ── attach origin/destination plants (runs for both window and random) ──
         df <- df %>%
                 left_join(move_plants, by = c(COL_WORKER, "movedate"))
+        summary(df)
+        
+        df <- df %>%
+                mutate(treated = 1L)
         
         message("  dep_plant / dest_plant joined: ",
-                sum(!is.na(df$dest_plant)), " rows with non-NA dest_plant")
+                sum(is.na(!df$dest_plant)), " rows with non-NA dest_plant")
+        
+        # ==============================================================================
+        # 3.B.6  ATTACH MOVEDATE ID TO MOVER PANEL
+        # ==============================================================================
+        df <- df %>%
+                left_join(movedate_ids, by = c(COL_WORKER, "movedate"))
+        
+        message("\nPost-windowing dataset:")
+        message("  Rows in multi-panel : ", nrow(df))
+        message("  Workers treated : ", n_distinct(df[[COL_WORKER]]))
+        message("  Unique movedates assigned : ", n_distinct(df$movedate_id))
+        
+        # ==============================================================================
+        # 3.B.7  DEFINE CONTROL WORKER POOL
+        # ==============================================================================
+        
+        # Default:
+        # Controls = non-movers + movers with no qualifying move-spells
+        
+        control_workers <- union(
+                non_movers,
+                movers_no_qualifying_spells
+        )
+        
+        # Alternative:
+        # control_workers <- non_movers
+        
+        message("\nControl worker pool:")
+        message("  Eligible control workers : ", length(control_workers))
+        
+        # ==============================================================================
+        # 3.B.8  SAMPLE CONTROLS FOR EACH MOVEDATE_ID
+        # ==============================================================================
+        
+        CONTROL_SHARE <- 0.10
+        
+        set.seed(12345)
+        
+        # One row per movedate_id
+        event_table <- movedate_ids %>%
+                distinct(movedate_id, movedate)
+        
+        # For each event, randomly sample controls
+        control_assignments <- event_table %>%
+                rowwise() %>%
+                mutate(
+                        sampled_controls = list(
+                                sample(
+                                        control_workers,
+                                        size = ceiling(CONTROL_SHARE * length(control_workers)),
+                                        replace = FALSE
+                                )
+                        )
+                ) %>%
+                tidyr::unnest(sampled_controls) %>%
+                rename(
+                        !!COL_WORKER := sampled_controls
+                ) %>%
+                ungroup()
+        
+        message("  Total sampled (event, control worker) pairs : ",
+                nrow(control_assignments))
+        
+        # ==============================================================================
+        # 3.B.9  BUILD STACKED CONTROL PANEL
+        # ==============================================================================
+        
+        control_panel <- df_full %>%
+                inner_join(
+                        control_assignments,
+                        by = COL_WORKER,
+                        relationship = "many-to-many"
+                ) %>%
+                mutate(
+                        win_lo = movedate - WINDOW_HALF,
+                        win_hi = movedate + WINDOW_HALF
+                ) %>%
+                filter(
+                        .data[[COL_DATE]] >= win_lo,
+                        .data[[COL_DATE]] <= win_hi
+                ) %>%
+                select(-win_lo, -win_hi) %>%
+                arrange(movedate_id, .data[[COL_WORKER]], .data[[COL_DATE]])
+        
+        control_panel <- control_panel %>%
+                mutate(
+                        movedate = as.Date(NA),
+                        treated  = 0L
+                )
+        
+        message("\nConstructed stacked control panel:")
+        message("  Observations : ", nrow(control_panel))
+        message("  Control workers appearing : ",
+                n_distinct(control_panel[[COL_WORKER]]))
+        
+        
+        summary(control_panel)
+        
+        df <- bind_rows(
+                df,
+                control_panel
+        )
         
 } else {
         stop("SPELL_MODE must be 'single' or 'multi'. Got: '", SPELL_MODE, "'")
 }
+
 
 # ==============================================================================
 # 4. CREATE POST INDICATOR
@@ -479,7 +580,12 @@ print(
 # Each variable type has its own aggregation rule as described in the design.
 
 collapsed <- df %>%
-        group_by(.data[[COL_WORKER]], .data[[COL_PLANT]], period, movedate) %>%
+        group_by(.data[[COL_WORKER]],
+                 .data[[COL_PLANT]], 
+                 period,
+                 movedate_id,
+                 treated,
+                 movedate) %>%
         summarise(
                 # Log outcome variables: mean within period
                 log_rev_per_hour = mean(log_rev_per_hour, na.rm = TRUE),
@@ -581,6 +687,8 @@ message("dist range (movers only): ",
         round(min(collapsed$dist, na.rm = TRUE), 1), " to ",
         round(max(collapsed$dist, na.rm = TRUE), 1), " periods.")
 
+collapsed <- collapsed %>%
+        arrange(movedate_id, treated, id_employee, period, plant)
 
 # ==============================================================================
 # 7. SAVE
