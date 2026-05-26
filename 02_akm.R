@@ -179,7 +179,7 @@ df <- df %>%
 # Change these two lines if running AKM on different columns.
 
 i <- "id_employee"   # worker ID column
-j <- "plant"         # plant ID column
+j <- "camion"         # plant ID column
 t <- "date"           # time variable column
 
 # Controls: NULL for none, or "week" / "month" / "bimonth" for automatic time

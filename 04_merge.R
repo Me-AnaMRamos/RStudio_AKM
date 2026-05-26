@@ -56,7 +56,7 @@ OUTCOMES <- c("log_rev_per_hour", "log_rev", "log_quant",
 # --- Column names ------------------------------------------------------------
 # These must match the column names produced by collapse.R and akm.R.
 COL_WORKER   <- "id_employee"
-COL_PLANT    <- "plant"
+COL_PLANT    <- "camion"
 COL_MOVEDATE <- "movedate"
 COL_PERIOD   <- "period"
 

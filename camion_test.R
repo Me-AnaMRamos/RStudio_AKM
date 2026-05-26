@@ -14,7 +14,7 @@ input_path  <- file.path(script_dir, "Data", "Analysis_data", "data.dta")
 df <- read_dta(input_path)
 
 df <- df %>%
-        mutate(plant = camion)
+        mutate(camion = plant)
 
 head(df)
 # Save back to same file

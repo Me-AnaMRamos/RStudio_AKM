@@ -30,7 +30,7 @@ PERIOD <- "week"
 # --- Column names ------------------------------------------------------------
 # These should match what prepare_data.R produced.
 COL_WORKER  <- "id_employee"
-COL_PLANT   <- "plant"
+COL_PLANT   <- "camion"
 COL_DATE    <- "date"
 COL_DAY     <- "day"
 
@@ -688,7 +688,7 @@ message("dist range (movers only): ",
         round(max(collapsed$dist, na.rm = TRUE), 1), " periods.")
 
 collapsed <- collapsed %>%
-        arrange(movedate_id, treated, id_employee, period, plant)
+        arrange(movedate_id, treated, .data[[COL_WORKER]], period, .data[[COL_PLANT]])
 
 # ==============================================================================
 # 7. SAVE
