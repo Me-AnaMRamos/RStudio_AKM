@@ -15,6 +15,8 @@ library(haven)
 library(dplyr)
 
 
+#--- Add coding of camion ids
+
 # ==============================================================================
 # 1. PATHS AND SETTINGS
 # ==============================================================================
@@ -31,6 +33,7 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 # different names, everything downstream will update accordingly.
 COL_WORKER   <- "id_employee"
 COL_PLANT    <- "plant"
+COL_TRUCK    <- "camion"
 COL_MANAGER  <- "id_supervisor"
 COL_DATE     <- "date"
 COL_VALUE    <- "tkt_value"
@@ -39,7 +42,7 @@ COL_QTY      <- "tkt_qty"
 COL_VPQ      <- "value_per_quant"
 COL_AVGTIME  <- "avg_time_tkt"
 COL_HIRING   <- "employee_date_hiring"
-
+COL_SHIFT_START_TIME <- "shift_start_time"
 required_cols <- c(COL_WORKER, COL_PLANT, COL_MANAGER, COL_DATE,
                    COL_VALUE, COL_TIME, COL_QTY, COL_VPQ, COL_AVGTIME, COL_HIRING)
 
@@ -70,16 +73,61 @@ for (col in required_cols) {
         message(sprintf("  %-25s %d missing (%s%%)", col, n_miss, pct))
 }
 
+
+
+# ==============================================================================
+# 4. CONVERT COL_PLANT, COL_TRUCK, COL_MANAGER, COL_SHIFT TO NUMERIC TYPE
+# ==============================================================================
+cols_to_convert <- c(COL_PLANT, COL_TRUCK, COL_MANAGER)
+
+for (col in cols_to_convert) {
+        
+        if (!is.numeric(df[[col]])) {
+                
+                tmp <- suppressWarnings(
+                        as.numeric(as.character(df[[col]]))
+                )
+                
+                if (all(!is.na(tmp))) {
+                        df[[col]] <- tmp
+                        message("Column '", col, "' converted to numeric.")
+                } else {
+                        df[[col]] <- as.integer(factor(df[[col]]))
+                        message("Column '", col, "' converted to numeric codes.")
+                }
+                
+        }
+}
+
+
+
 # Check that the three ID columns contain only integer values.
 # Stata numeric IDs sometimes come in as doubles (e.g. 1.0, 2.0); we check
 # whether all non-missing values are whole numbers, not just that the type is integer.
 message("\n--- Identifier type checks ---") 
-for (col in c(COL_WORKER, COL_PLANT)) {     # Add COL_MANAGER if it will be used later  
+for (col in c(COL_WORKER, COL_PLANT, COL_TRUCK, COL_MANAGER)) {     # Add COL_MANAGER if it will be used later  
         vals        <- df[[col]][!is.na(df[[col]])]
         is_int_vals <- all(vals == floor(vals))
         message(sprintf("  %-20s integer-valued: %s", col, is_int_vals))
 }
 
+# --- Shift start time to decimal hours ---------------------------------------
+# shift_start_time may be stored as "HH:MM" strings or a numeric.
+# We convert to decimal hours (e.g. "08:30" -> 8.5) before taking the mode.
+to_decimal_hours <- function(x) {
+        if (is.numeric(x)) return(x)
+        
+        x <- gsub("[^0-9:]", "", as.character(x))
+        parts <- strsplit(x, ":", fixed = TRUE)
+        
+        sapply(parts, function(p) {
+                if (length(p) < 2) return(NA_real_)
+                as.numeric(p[1]) + as.numeric(p[2]) / 60
+        })
+}
+
+df <- df %>%
+        mutate(shift_start_decimal = to_decimal_hours(.data[[COL_SHIFT_START_TIME]]))
 
 # ==============================================================================
 # 4. DATE AND TIME VARIABLE
@@ -173,7 +221,7 @@ df <- df %>%
                 tenure_raw  = as.integer(date - hiring_date)
         ) %>%
         group_by(.data[[COL_WORKER]]) %>%
-        mutate(tenure = tenure_raw - min(tenure_raw, na.rm = TRUE)) %>%
+        mutate( ntenure = tenure_raw - min(tenure_raw, na.rm = TRUE)) %>%
         ungroup() %>%
         select(-hiring_date, -tenure_raw)  # drop the helper columns
 
@@ -189,6 +237,19 @@ message("  Overtime rate:  ", round(mean(df$overtime), 3))
 message("  Mean tenure:    ", round(mean(df$tenure, na.rm = TRUE), 1), " days")
 message("  Turnover obs:   ", sum(df$turnover), " (one per worker)")
 head(df)
+
+# ==============================================================================
+# 6. NEW TRUCK VARIABLE
+# ==============================================================================
+
+df <- df %>%
+        group_by(.data[[COL_TRUCK]]) %>%
+        mutate(
+                first_truck_date = min(.data[[COL_DATE]], na.rm = TRUE),
+                new_truck = as.integer(.data[[COL_DATE]] == first_truck_date)
+        ) %>%
+        ungroup() %>%
+        select(-first_truck_date)
 
 # ==============================================================================
 # 7. PANEL VALIDATION
@@ -224,8 +285,9 @@ if (n_dupes > 0) {
 # ==============================================================================
 # 8. SAVE PROCESSED DATASET
 # ==============================================================================
-head(df)
+head(df$new_truck)
 write_dta(df, output_path)
+
 message("\nProcessed dataset saved to: ", output_path)
 message("Final dataset: ", nrow(df), " rows, ", ncol(df), " columns.")
 

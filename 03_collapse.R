@@ -2,7 +2,7 @@
 # Script: 03_collapse.R
 #
 # Takes the processed worker-day panel, filters to valid workers (workers within valid components of mobility graph for which the AKM FE were calculated, including non-movers), defines
-# worker mobility (spells, movedate, post), aggregates to worker-plant-period,
+# worker mobility (spells, movedate, post), aggregates to worker-unit-period,
 # and computes dist.
 #
 # Input:  Data/Analysis_data/processed/data_processed.dta
@@ -30,22 +30,29 @@ PERIOD <- "week"
 # --- Column names ------------------------------------------------------------
 # These should match what prepare_data.R produced.
 COL_WORKER  <- "id_employee"
-COL_PLANT   <- "camion"
+COL_TRUCK   <- "camion"
+COL_PLANT   <- "plant"
 COL_DATE    <- "date"
 COL_DAY     <- "day"
+
+COL_UNIT <- COL_TRUCK 
 
 # Absence columns: adjust names if data uses different ones.
 COL_ABSENT_IND  <- "absent"          # binary: 1 if absent that day
 
 # Shift timing columns
 COL_START_HOUR       <- "start_hour"        # actual start hour (categorical/numeric)
-COL_SHIFT_START_TIME <- "shift_start_time"  # scheduled start time (stored as string or numeric)
+COL_SHIFT_START_TIME <- "shift_start_decimal"  # scheduled start time (stored as string or numeric)
+
+# --- AKM config -----------------------------------------------------------
+CTRL_AKM <- "week_tenure"
+name_input_workers <- paste0("worker_fe_LEV_", COL_WORKER, "_", COL_UNIT, "_CTRL_", CTRL_AKM, ".dta")
 
 # --- Paths -------------------------------------------------------------------
 input_data    <- file.path(script_dir, "Data", "Analysis_data", "processed", "data_processed.dta")
-input_workers <- file.path(script_dir, "Outputs", "AKM", "worker_fe_all_week.dta")
+input_workers <- file.path(script_dir, "Outputs", "AKM", name_input_workers)
 output_dir    <- file.path(script_dir, "Outputs", "Collapsed")
-output_path   <- file.path(output_dir, paste0("collapsed_", PERIOD, ".dta"))
+output_path   <- file.path(output_dir, paste0("collapsed_LEV_", COL_WORKER, "_", COL_UNIT, "_", PERIOD, ".dta"))
 
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
@@ -75,8 +82,8 @@ message("After filtering to valid workers: ", nrow(df), " rows, ",
 # ==============================================================================
 # 3. DEFINE EMPLOYMENT SPELLS AND MOVEDATE
 # ==============================================================================
-# A spell is a consecutive sequence of days at the same plant.
-# We detect spell boundaries by checking whether the plant changed compared
+# A spell is a consecutive sequence of days at the same unit
+# We detect spell boundaries by checking whether the unit changed compared
 # to the previous day for the same worker (when sorted by date).
 #
 # MODE SELECTION:
@@ -106,19 +113,22 @@ df <- df %>%
         arrange(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
         group_by(.data[[COL_WORKER]]) %>%
         mutate(
-                spell_start = (.data[[COL_PLANT]] != lag(.data[[COL_PLANT]], default = NA)) |
-                        is.na(lag(.data[[COL_PLANT]])),
+                spell_start = (.data[[COL_UNIT]] != lag(.data[[COL_UNIT]], default = NA)) |
+                        is.na(lag(.data[[COL_UNIT]])),
                 spell_id    = cumsum(spell_start)
         ) %>%
         ungroup()
 
-summary(df[[COL_DATE]])
+summary(df$new_truck)
+
 
 # Compute duration (in days) of each spell
 spell_summary <- df %>%
+        arrange(.data[[COL_WORKER]], .data[[COL_DATE]]) %>%
         group_by(.data[[COL_WORKER]], spell_id) %>%
         summarise(
-                spell_plant    = first(.data[[COL_PLANT]]),
+                new_truck      = first(new_truck),
+                spell_unit    = first(.data[[COL_UNIT]]),
                 spell_start_dt = min(.data[[COL_DATE]]),
                 spell_end_dt   = max(.data[[COL_DATE]]),
                 spell_duration = as.integer(spell_end_dt - spell_start_dt) + 1L,
@@ -133,28 +143,30 @@ n_spells_per_worker <- spell_summary %>%
 # 3.1 DEFINE ORIGIN / DESTINATION PLANTS PER (WORKER, SPELL)
 # ==============================================================================
 
-move_plants <- spell_summary %>%
+move_units <- spell_summary %>%
         arrange(.data[[COL_WORKER]], spell_start_dt) %>%
         group_by(.data[[COL_WORKER]]) %>%
         mutate(
-                dest_plant = spell_plant,
-                dep_plant  = lag(spell_plant)          # plant of the spell just before
+                dest_unit = spell_unit,
+                dep_unit  = lag(spell_unit), # unit of the spell just before
+                dest_truck_is_new = new_truck,
+                dep_truck_is_new  = lag(new_truck),
         ) %>%
         ungroup() %>%
         # Each row here is one (worker, spell); rename start date to movedate
         # so it matches the key used downstream.
         rename(movedate = spell_start_dt) %>%
-        select(all_of(COL_WORKER), movedate, dest_plant, dep_plant) %>%
-        # First spell per worker has no predecessor → dep_plant = NA (already NA
+        select(all_of(COL_WORKER), movedate, dest_unit, dep_unit, dest_truck_is_new, dep_truck_is_new) %>%
+        # First spell per worker has no predecessor → dep_unit = NA (already NA
         # from lag); keep it so non-movers are represented but both cols are NA.
-        filter(!is.na(dep_plant))                  # drop first-spell rows (no move)
+        filter(!is.na(dep_unit))                  # drop first-spell rows (no move)
 
-message("\nOrigin/destination plant summary:")
-message("  (worker, movedate) pairs with dest & dep plant : ", nrow(move_plants))
+message("\nOrigin/destination unit summary:")
+message("  (worker, movedate) pairs with dest & dep unit : ", nrow(move_units))
 message("  Workers covered                                : ",
-        n_distinct(move_plants[[COL_WORKER]]))
+        n_distinct(move_units[[COL_WORKER]]))
 
-summary(move_plants)
+summary(move_units)
 
 # ==============================================================================
 # 3.2 IDENTIFY MOVERS / NON-MOVERS
@@ -349,7 +361,7 @@ if (SPELL_MODE == "single") {
         # Default window: MIN_SPELL_LENGTH / 2 (rounded down) on each side,
         # so total window width < MIN_SPELL_LENGTH → windows cannot overlap when
         # spells are >= MIN_SPELL_LENGTH apart.
-        WINDOW_HALF <- 3 # floor(min_gap / 2)
+        WINDOW_HALF <- 14 # floor(min_gap / 2)
         
         message("\nWindow half-width : ", WINDOW_HALF, " days  (total window = ",
                 2 * WINDOW_HALF + 1, " days, centred on movedate)")
@@ -374,9 +386,6 @@ if (SPELL_MODE == "single") {
                         win_hi = movedate + WINDOW_HALF
                 )
         
-        summary(movedate_lookup)
-        summary(df)
-        
         # ==============================================================================
         # SAVE ORIGINAL FULL PANEL
         # Needed later for control sampling
@@ -398,16 +407,15 @@ if (SPELL_MODE == "single") {
             
  
         
-        # ── attach origin/destination plants (runs for both window and random) ──
+        # ── attach origin/destination units (runs for both window and random) ──
         df <- df %>%
-                left_join(move_plants, by = c(COL_WORKER, "movedate"))
-        summary(df)
-        
+                left_join(move_units, by = c(COL_WORKER, "movedate"))
+
         df <- df %>%
                 mutate(treated = 1L)
         
-        message("  dep_plant / dest_plant joined: ",
-                sum(is.na(!df$dest_plant)), " rows with non-NA dest_plant")
+        message("  dep_unit / dest_unit joined: ",
+                sum(is.na(!df$dest_unit)), " rows with non-NA dest_unit")
         
         # ==============================================================================
         # 3.B.6  ATTACH MOVEDATE ID TO MOVER PANEL
@@ -494,7 +502,6 @@ if (SPELL_MODE == "single") {
         
         control_panel <- control_panel %>%
                 mutate(
-                        movedate = as.Date(NA),
                         treated  = 0L
                 )
         
@@ -523,7 +530,9 @@ if (SPELL_MODE == "single") {
 # post = 1 for all observations on or after movedate, 0 before.
 # Non-movers (movedate is NA) get post = 0 everywhere.
 df <- df %>%
-        mutate(post = as.integer(!is.na(movedate) & .data[[COL_DATE]] >= movedate))
+        mutate(post = as.integer(!is.na(movedate) & .data[[COL_DATE]] >= movedate & treated == 1L),
+               after_event = as.integer(!is.na(movedate) & .data[[COL_DATE]] >= movedate),
+               )
 
 message("\nPost indicator: ", sum(df$post), " worker-day obs flagged as post-move.")
 
@@ -548,44 +557,16 @@ get_mode <- function(x) {
         names(tbl)[1]
 }
 
-# --- Shift start time to decimal hours ---------------------------------------
-# shift_start_time may be stored as "HH:MM" strings or a numeric.
-# We convert to decimal hours (e.g. "08:30" -> 8.5) before taking the mode.
-to_decimal_hours <- function(x) {
-        if (is.numeric(x)) return(x)
-        
-        x <- gsub("[^0-9:]", "", as.character(x))
-        parts <- strsplit(x, ":", fixed = TRUE)
-        
-        sapply(parts, function(p) {
-                if (length(p) < 2) return(NA_real_)
-                as.numeric(p[1]) + as.numeric(p[2]) / 60
-        })
-}
-
-df <- df %>%
-        mutate(shift_start_decimal = to_decimal_hours(.data[[COL_SHIFT_START_TIME]]))
-
-print(
-        head(
-                df %>%
-                        select(-starts_with("log_")),
-                n = 10
-        ),
-        width = Inf
-)
 
 # --- Aggregate ---------------------------------------------------------------
-# One row per (worker, plant, period).
+# One row per (worker, unit, period).
 # Each variable type has its own aggregation rule as described in the design.
 
 collapsed <- df %>%
         group_by(.data[[COL_WORKER]],
-                 .data[[COL_PLANT]], 
+                 .data[[COL_UNIT]], 
                  period,
-                 movedate_id,
-                 treated,
-                 movedate) %>%
+                 movedate_id) %>%
         summarise(
                 # Log outcome variables: mean within period
                 log_rev_per_hour = mean(log_rev_per_hour, na.rm = TRUE),
@@ -608,16 +589,20 @@ collapsed <- df %>%
 
                 # Shift timing: mode of actual start hour; mode of scheduled start (decimal)
                 start_hour_mode        = as.numeric(get_mode(.data[[COL_START_HOUR]])),
-                shift_start_mode       = get_mode(shift_start_decimal),
+                shift_start_mode       = get_mode(.data[[COL_SHIFT_START_TIME]]),
+                new_truck     = max(new_truck),
                 
                 # Post indicator: max within period (1 if any day in the period is post-move)
                 post             = max(post, na.rm = TRUE),
                 
-                # Carry through worker-level move information
-                d1_moved_to   = first(dest_plant),
-                d1_moved_from = first(dep_plant),
-                movedate        = first(movedate),
+                treated          = min(treated),
                 
+                # Carry through worker-level move information
+                d1_moved_to   = first(dest_unit),
+                d1_moved_from = first(dep_unit),
+                movedate      = first(movedate),
+                dep_truck_is_new = first(dep_truck_is_new),
+                dest_truck_is_new = first(dest_truck_is_new),
                 # Keep date of first day in the period for reference
                 date_first       = min(.data[[COL_DATE]]),
                 
@@ -630,32 +615,50 @@ message(
         paste(names(collapsed), collapse = ", ")
 )
 
+imm_post_collapsed <- collapsed
 # on_time: 1 if actual start hour matches scheduled start (after aggregation)
 collapsed <- collapsed %>%
         mutate(on_time = as.integer(
                 !is.na(start_hour_mode) & !is.na(shift_start_mode) &
                         round(start_hour_mode, 2) == round(shift_start_mode, 2)
         ))
-
+# TO DO HYP: changed start hour should report by movedate_id, worker, arranged by period (not grouped by unit) and additional col
+# saying if worker moved from unit since last week
 # changed_start_hour: 1 if start_hour_mode differs from the previous period
-# for the same worker-plant pair, 0 otherwise. Missing for the first period.
+# for the same worker-unit pair, 0 otherwise. Missing for the first period.
 collapsed <- collapsed %>%
-        arrange(.data[[COL_WORKER]], period, .data[[COL_PLANT]]) %>%
-        group_by(.data[[COL_WORKER]], .data[[COL_PLANT]]) %>%
+        arrange(movedate_id, .data[[COL_WORKER]], period) %>%
+        group_by(movedate_id, .data[[COL_WORKER]]) %>%
         mutate(
                 changed_start_hour = as.integer(
                         !is.na(start_hour_mode) &
                                 !is.na(lag(start_hour_mode)) &
                                 start_hour_mode != lag(start_hour_mode)
                 ),
-                # First period within each worker-plant pair gets NA (no previous period)
+                # First period within each worker-unit pair gets NA (no previous period)
                 changed_start_hour = if_else(is.na(lag(start_hour_mode)), NA_integer_, changed_start_hour)
         ) %>%
         ungroup()
 
-message("\nCollapsed to worker-plant-period: ", nrow(collapsed), " rows.")
 
+collapsed <- collapsed %>%
+        group_by(movedate_id, .data[[COL_WORKER]], period) %>%
+        mutate(
+                n_units_period = n_distinct(.data[[COL_UNIT]])
+        ) %>%
+        ungroup() %>%
+        arrange(movedate_id, .data[[COL_WORKER]], period) %>%
+        group_by(movedate_id, .data[[COL_WORKER]]) %>%
+        mutate(
+                multi_unit_curr_or_prev =
+                        as.integer(
+                                n_units_period > 1 |
+                                        lag(n_units_period, default = 1) > 1
+                        )
+        ) %>%
+        ungroup()
 
+message("\nCollapsed to worker-unit-period: ", nrow(collapsed), " rows.")
 # ==============================================================================
 # 6. COMPUTE DIST (DISTANCE IN PERIODS TO MOVEDATE)
 # ==============================================================================
@@ -674,6 +677,7 @@ collapsed <- collapsed %>%
                 # difftime gives days; divide by period length to get period count.
                 dist = case_when(
                         is.na(movedate) ~ NA_real_,
+                        PERIOD == "day"   ~ as.numeric(difftime(period, movedate_period, units = "days")),
                         PERIOD == "week"  ~ as.numeric(difftime(period, movedate_period, units = "weeks")),
                         PERIOD == "month" ~ as.numeric(
                                 (as.integer(format(period, "%Y")) - as.integer(format(movedate_period, "%Y"))) * 12 +
@@ -688,19 +692,21 @@ message("dist range (movers only): ",
         round(max(collapsed$dist, na.rm = TRUE), 1), " periods.")
 
 collapsed <- collapsed %>%
-        arrange(movedate_id, treated, .data[[COL_WORKER]], period, .data[[COL_PLANT]])
+        arrange(movedate_id, treated, .data[[COL_WORKER]], period, .data[[COL_UNIT]])
 
 # ==============================================================================
-# 7. SAVE
+# 8. SAVE
 # ==============================================================================
-print(
+print(n=30,
         head(
                 collapsed %>%
                         select(-starts_with("log_")),
-                n = 10
+                n = 30
         ),
         width = Inf
 )
+
+summary(collapsed)
 write_dta(collapsed, output_path)
 message("\nCollapsed dataset saved to: ", output_path)
 message("Final dataset: ", nrow(collapsed), " rows, ", ncol(collapsed), " columns.")

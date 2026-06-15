@@ -31,10 +31,11 @@ MOVE_DEF <- 1        # 1 or 2            — must match define_moves.R
 # --- AKM outcomes (must match akm.R and define_moves.R) ----------------------
 # These drive the classifier loop: for each entry there must be a column
 # move_to_high_fe_[entry] in the event study dataset.
+AKM_LEVEL_UNIT <- "camion" 
 AKM_OUTCOMES <- c("log_rev_per_hour", "log_rev", "log_quant",
                   "log_tottime",      "log_avgtime", "log_value")
 
-CONTROLS_AKM <- "week"
+CONTROLS_AKM <- "week_tenure"
 
 # --- Regression outcome variables --------------------------------------------
 # Full list of dependent variables to run regressions for.
@@ -74,7 +75,7 @@ COL_POST   <- "post"
 # --- Paths -------------------------------------------------------------------
 input_path <- file.path(script_dir, "Outputs", "Merged",
                         paste0("panel_data",
-                               "_level-",PERIOD_COLLAPSED,
+                               "_lev_", COL_WORKER, "_", AKM_LEVEL_UNIT, "_", PERIOD_COLLAPSED,
                                "_akm-", CONTROLS_AKM,
                                "_def-", MOVE_DEF,
                                ".dta"))
@@ -240,7 +241,7 @@ for (akm_out in AKM_OUTCOMES) {
                 })
                 
                 # ------------------------------------------------------------------
-                # Spec 3: Among movers to high-FE plants,
+                # Spec 3: Among movers to high-FE units,
                 #         compare High->High vs Low->High
                 #
                 # Baseline group:
@@ -256,7 +257,7 @@ for (akm_out in AKM_OUTCOMES) {
                 res3 <- tryCatch({
                         
                         # Restrict sample:
-                        # keep only movers TO high-FE plants
+                        # keep only movers TO high-FE units
                         df_sp3 <- df_base %>%
                                 filter(.data[[col_to_high]] == 1)
                         
